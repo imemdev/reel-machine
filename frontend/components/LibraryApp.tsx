@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  ArrowsOutSimple,
+  ArrowsInSimple,
   ArrowClockwise,
   ArrowLeft,
   ArrowRight,
@@ -26,6 +28,7 @@ import {
   Moon,
   Palette,
   Play,
+  Pause,
   Plus,
   Pulse,
   ShieldCheck,
@@ -60,7 +63,9 @@ import {
   type Video,
 } from "@/lib/api";
 
-type View = "dashboard" | "library" | "settings";
+import NotesPage from "./NotesPage";
+
+type View = "dashboard" | "library" | "results" | "notes" | "settings";
 type Theme = "light" | "paper" | "slate" | "dark";
 type NoticeKind = "info" | "success" | "warning" | "error";
 type IconComponent = ComponentType<any>;
@@ -84,14 +89,7 @@ const FALLBACK_MODELS: ModelOption[] = [
     available: false,
     availability_note: "Connect the local API to read runtime readiness.",
   },
-  {
-    key: "whisper_large_v3",
-    label: "Whisper Large-v3 (Full)",
-    description: "OpenAI's full multilingual baseline; heavier, with no quantization fallback.",
-    source: "ggml-large-v3.bin",
-    available: false,
-    availability_note: "Connect the local API to read runtime readiness.",
-  },
+
 ];
 
 const STAGE_LABELS: Record<Stage, string> = {
@@ -116,6 +114,8 @@ const PIPELINE_STEPS = [
 const NAV_ITEMS: { key: View; label: string; icon: IconComponent }[] = [
   { key: "dashboard", label: "Dashboard", icon: SquaresFour },
   { key: "library", label: "Library", icon: Stack },
+  { key: "results", label: "Résultat", icon: FileText },
+  { key: "notes", label: "Notes", icon: FileText },
   { key: "settings", label: "Settings", icon: GearSix },
 ];
 
@@ -195,6 +195,7 @@ function tagNames(videos: Video[]) {
 export default function LibraryApp() {
   const reducedMotion = useReducedMotion() ?? false;
   const [activeView, setActiveView] = useState<View>("dashboard");
+  const [noteCount, setNoteCount] = useState<number | null>(null);
   const [theme, setTheme] = useState<Theme>("light");
   const [config, setConfig] = useState<Config | null>(null);
   const [videos, setVideos] = useState<Video[]>([]);
@@ -208,12 +209,7 @@ export default function LibraryApp() {
   const [apiError, setApiError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: NoticeKind; message: string } | null>(null);
   const [addOpen, setAddOpen] = useState(false);
-  const [modelDialog, setModelDialog] = useState<{
-    ids: string[];
-    action: JobAction;
-    hasManualEdits: boolean;
-  } | null>(null);
-  const [jobBusy, setJobBusy] = useState(false);
+  const jobLock = useRef(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -280,7 +276,7 @@ export default function LibraryApp() {
     return () => clearInterval(timer);
   }, [refresh, videos]);
 
-  const models = config?.models?.length === 2 ? config.models : FALLBACK_MODELS;
+  const models = config?.models?.length ? config.models : FALLBACK_MODELS;
   const allTags = useMemo(() => tagNames(videos), [videos]);
   const selectedBatchAction = useMemo<JobAction | null>(() => {
     const chosen = videos.filter((video) => selectedIds.includes(video.id));
@@ -324,36 +320,26 @@ export default function LibraryApp() {
     setAddOpen(false);
     setActiveView("library");
     setSelectedIds([]);
-    showNotice(duplicate ? "This link was already in your library." : "Saved to Inbox. Choose a model when you are ready to process it.", duplicate ? "info" : "success");
+    showNotice(duplicate ? "This link was already in your library." : "Saved to Inbox. Process with FarukSTT whenever you are ready.", duplicate ? "info" : "success");
     void refresh();
   }, [mergeVideo, refresh, showNotice]);
 
-  const openModelDialog = useCallback((ids: string[], action: JobAction) => {
-    if (!ids.length) return;
-    setModelDialog({ ids, action, hasManualEdits: videos.some((video) => ids.includes(video.id) && video.manual_edits) });
-  }, [videos]);
-
-  const handleJobs = useCallback(async (modelKey: "farukstt" | "whisper_large_v3", ownerAsserted: boolean) => {
-    if (!modelDialog) return;
-    setJobBusy(true);
+  const openModelDialog = useCallback(async (ids: string[], action: JobAction) => {
+    if (!ids.length || jobLock.current) return;
+    jobLock.current = true;
+    setActionBusy(ids[0]);
     try {
-      const result = await api.createJobs({
-        video_ids: modelDialog.ids,
-        action: modelDialog.action,
-        model_key: modelKey,
-        owner_asserted_tunisian: ownerAsserted,
-      });
-      setModelDialog(null);
+      const result = await api.createJobs({ video_ids: ids, action, model_key: "farukstt", owner_asserted_tunisian: true });
       setSelectedIds([]);
-      const rejectedText = result.rejected.length ? ` ${result.rejected.length} item${result.rejected.length === 1 ? " was" : "s were"} rejected.` : "";
-      showNotice(`${actionLabel(modelDialog.action)} queued with ${modelKey === "farukstt" ? "FarukSTT" : "Whisper Large-v3 (Full)"}.${rejectedText}`, result.rejected.length ? "warning" : "success");
+      showNotice(`${result.accepted.length} queued with FarukSTT.${result.rejected.map((item) => ` ${item.message}`).join("")}`, result.rejected.length ? "warning" : "success");
       await refresh();
     } catch (error) {
       showNotice(errorMessage(error), "error");
     } finally {
-      setJobBusy(false);
+      jobLock.current = false;
+      setActionBusy(null);
     }
-  }, [modelDialog, refresh, showNotice]);
+  }, [refresh, showNotice]);
 
   const handleStageAction = useCallback(async (id: string, action: StageAction) => {
     setActionBusy(id);
@@ -397,6 +383,7 @@ export default function LibraryApp() {
               <button key={item.key} className={`nav-item ${isActive ? "is-active" : ""}`} onClick={() => setActiveView(item.key)}>
                 <Icon size={18} weight={isActive ? "fill" : "regular"} />
                 <span>{item.label}</span>
+                {item.key === "notes" ? <span className="nav-count">{noteCount ?? "—"}</span> : null}
                 {item.key === "library" && counts.total > 0 ? <span className="nav-count">{counts.total}</span> : null}
               </button>
             );
@@ -420,14 +407,14 @@ export default function LibraryApp() {
           <div className="topbar-context">
             <span className="topbar-kicker">Personal workspace</span>
             <span className="topbar-divider">/</span>
-            <span>{activeView === "dashboard" ? "Overview" : activeView === "library" ? "Library" : "Preferences"}</span>
+            <span>{activeView === "dashboard" ? "Overview" : activeView === "library" ? "Library" : activeView === "results" ? "Résultat" : activeView === "notes" ? "Notes" : "Preferences"}</span>
           </div>
           <div className="topbar-actions">
-            <label className="global-search" aria-label="Search library">
+            {activeView !== "notes" && <label className="global-search" aria-label="Search library">
               <MagnifyingGlass size={16} />
-              <input name="global-search" value={search} onChange={(event) => setSearch(event.target.value)} onFocus={() => setActiveView("library")} placeholder="Search library" />
+              <input name="global-search" value={search} onChange={(event) => setSearch(event.target.value)} onFocus={() => { if (activeView !== "results") setActiveView("library"); }} placeholder="Search library" />
               <kbd>⌘ K</kbd>
-            </label>
+            </label>}
             <ThemeMenu theme={theme} onChange={setTheme} compact />
             <button className="avatar-button" title="Local owner">LM</button>
             <button className="button button-primary button-small" onClick={() => setAddOpen(true)}>
@@ -461,7 +448,7 @@ export default function LibraryApp() {
           </div>
         ) : null}
 
-        <main className="page-content">
+        <main className={`page-content ${(activeView === "results" || activeView === "notes") ? "results-content" : ""}`}>
           {activeView === "dashboard" ? (
             <DashboardPage
               counts={counts}
@@ -492,18 +479,32 @@ export default function LibraryApp() {
               onOpenModel={openModelDialog}
               onStageAction={handleStageAction}
               onUpdated={handleVideoUpdated}
+              onDeleted={(id) => {
+                setVideos((items) => items.filter((item) => item.id !== id));
+                setSelectedIds((ids) => ids.filter((item) => item !== id));
+                setSelectedVideoId(null);
+                setDetail(null);
+                showNotice("Video deleted. Processing stopped and all video data removed.", "success");
+                void refresh();
+              }}
               onNotice={showNotice}
               onCloseDetail={() => { setSelectedVideoId(null); setDetail(null); }}
               onClearSelection={() => setSelectedIds([])}
             />
           ) : null}
+          {activeView === "results" ? <ResultsPage videos={videos} loading={loading} search={search} onSearch={setSearch} onNotice={showNotice} onDeleted={(id) => {
+            setVideos((items) => items.filter((item) => item.id !== id));
+            setSelectedIds((ids) => ids.filter((item) => item !== id));
+            if (selectedVideoId === id) { setSelectedVideoId(null); setDetail(null); }
+            void refresh();
+          }} /> : null}
+          <NotesPage active={activeView === "notes"} onCount={setNoteCount} />
           {activeView === "settings" ? <SettingsPage models={models} theme={theme} onThemeChange={setTheme} /> : null}
         </main>
       </div>
 
       <AnimatePresence>
         {addOpen ? <AddVideoDialog key="add" suggestedTags={config?.suggested_tags ?? []} onClose={() => setAddOpen(false)} onSaved={handleAdded} onError={showNotice} /> : null}
-        {modelDialog ? <ModelDialog key="model" action={modelDialog.action} count={modelDialog.ids.length} hasManualEdits={modelDialog.hasManualEdits} models={models} busy={jobBusy} onClose={() => setModelDialog(null)} onSubmit={handleJobs} /> : null}
       </AnimatePresence>
     </div>
   );
@@ -530,7 +531,7 @@ function DashboardPage({
 }) {
   const reducedMotion = useReducedMotion() ?? false;
   const metrics = [
-    { label: "Inbox", value: counts.inbox, detail: "Waiting for a model", icon: Stack, tone: "blue" },
+    { label: "Inbox", value: counts.inbox, detail: "Ready for FarukSTT", icon: Stack, tone: "blue" },
     { label: "Processing", value: counts.processing, detail: "Local jobs running", icon: Pulse, tone: "orange" },
     { label: "Processed", value: counts.processed, detail: "Ready to review", icon: CheckCircle, tone: "green" },
     { label: "Complete", value: counts.complete, detail: "Transcript retained", icon: LockSimple, tone: "purple" },
@@ -586,14 +587,14 @@ function DashboardPage({
 
         <div className="panel model-panel">
           <div className="panel-heading">
-            <div><span className="section-eyebrow">Recognition lab</span><h2>Choose your voice</h2></div>
+            <div><span className="section-eyebrow">Recognition lab</span><h2>Your transcription model</h2></div>
             <Lightning size={18} className="panel-heading-icon" weight="duotone" />
           </div>
-          <p className="panel-copy">Every processing run asks you to choose one model first. That keeps testing comparable and auditable.</p>
+          <p className="panel-copy">FarukSTT processes Tunisian Arabic automatically. No model selection or language confirmation needed.</p>
           <div className="model-mini-list">
             {models.map((model) => <ModelMiniCard key={model.key} model={model} />)}
           </div>
-          <div className="subtle-callout"><Info size={16} /><span>FarukSTT is the Derja-focused test. Whisper Large-v3 is the full multilingual baseline.</span></div>
+          <div className="subtle-callout"><Info size={16} /><span>FarukSTT is ready for Tunisian Arabic, including French and English code-switching.</span></div>
         </div>
       </section>
 
@@ -622,7 +623,7 @@ function ProcessingCard({ video, onSelect }: { video: Video; onSelect: (id: stri
         <span>{video.job ? `${actionLabel(video.job.action)} · ${video.job.model_label}` : "Queued"}</span>
       </span>
       <span className="processing-card-progress">
-        <span className="progress-label">{stepLabel(video.job?.current_step ?? null)}</span>
+        <span className="progress-label">{video.paused ? "Paused" : stepLabel(video.job?.current_step ?? null)}</span>
         <span className="progress-track"><span style={{ width: `${Math.max(10, ((progressIndex + 1) / PIPELINE_STEPS.length) * 100)}%` }} /></span>
       </span>
       <CaretRight size={17} className="muted-icon" />
@@ -680,6 +681,7 @@ function LibraryPage({
   onOpenModel,
   onStageAction,
   onUpdated,
+  onDeleted,
   onNotice,
   onCloseDetail,
   onClearSelection,
@@ -700,6 +702,7 @@ function LibraryPage({
   onOpenModel: (ids: string[], action: JobAction) => void;
   onStageAction: (id: string, action: StageAction) => void;
   onUpdated: (video: Video) => void;
+  onDeleted: (id: string) => void;
   onNotice: (message: string, kind?: NoticeKind) => void;
   onCloseDetail: () => void;
   onClearSelection: () => void;
@@ -756,7 +759,7 @@ function LibraryPage({
           <div className="bulk-bar">
             <span><CheckCircle size={16} weight="fill" /> {selectedIds.length} selected</span>
             <div>
-              {selectedBatchAction ? <button className="button button-primary button-small" onClick={() => onOpenModel(selectedIds, selectedBatchAction)}>{actionLabel(selectedBatchAction)} with a model <ArrowRight size={14} /></button> : null}
+              {selectedBatchAction ? <button className="button button-primary button-small" onClick={() => onOpenModel(selectedIds, selectedBatchAction)}>{actionLabel(selectedBatchAction)} with FarukSTT <ArrowRight size={14} /></button> : null}
               {bulkStageAction ? <button className="button button-secondary button-small" onClick={() => selectedIds.forEach((id) => onStageAction(id, bulkStageAction))}>{bulkStageAction === "done" ? "Mark Done" : "Move to Processed"}</button> : null}
             </div>
           </div>
@@ -792,11 +795,13 @@ function LibraryPage({
       <aside className="detail-column">
         {detail ? (
           <VideoDetail
+            key={detail.id}
             video={detail}
             onBack={onCloseDetail}
             onOpenModel={(action) => onOpenModel([detail.id], action)}
             onStageAction={onStageAction}
             onUpdated={onUpdated}
+            onDeleted={onDeleted}
             onNotice={onNotice}
           />
         ) : (
@@ -841,7 +846,7 @@ function VideoRow({
     >
       <span className="check-cell" onClick={(event) => event.stopPropagation()}><input name={`select-${video.id}`} type="checkbox" checked={selected} onChange={() => onToggleSelected(video.id)} aria-label={`Select ${video.title}`} /></span>
       <span className="source-cell"><Thumb video={video} size="small" /><span className="source-copy"><strong>{video.title}</strong><span>{platformLabel(video.platform)} · {video.creator}</span></span></span>
-      <span><StageBadge stage={video.stage} /></span>
+      <span><StageBadge stage={video.stage} paused={video.paused} /></span>
       <span className="row-tags">{video.tags.length ? video.tags.slice(0, 2).map((tag) => <span className="tag-chip" key={tag}>{tag}</span>) : <span className="muted-text">No tags</span>}{video.tags.length > 2 ? <span className="tag-overflow">+{video.tags.length - 2}</span> : null}</span>
       <span className="saved-cell">{formatDate(video.saved_at, false)}<small>{formatDuration(video.duration_ms)}</small></span>
       <span className="row-action" onClick={(event) => event.stopPropagation()}>
@@ -851,9 +856,9 @@ function VideoRow({
   );
 }
 
-function StageBadge({ stage }: { stage: Stage }) {
-  const icon = stage === "processing" ? <CircleNotch size={13} className="spin" /> : stage === "processed" || stage === "done" ? <CheckCircle size={13} weight="fill" /> : stage === "complete" ? <LockSimple size={13} weight="fill" /> : stage === "error" ? <WarningCircle size={13} weight="fill" /> : <Clock size={13} />;
-  return <span className={`stage-badge stage-${stage}`}>{icon}{stageLabel(stage)}</span>;
+function StageBadge({ stage, paused = false }: { stage: Stage; paused?: boolean }) {
+  const icon = paused ? <Pause size={13} /> : stage === "processing" ? <CircleNotch size={13} className="spin" /> : stage === "processed" || stage === "done" ? <CheckCircle size={13} weight="fill" /> : stage === "complete" ? <LockSimple size={13} weight="fill" /> : stage === "error" ? <WarningCircle size={13} weight="fill" /> : <Clock size={13} />;
+  return <span className={`stage-badge stage-${stage}`}>{icon}{paused ? "Paused" : stageLabel(stage)}</span>;
 }
 
 function Thumb({ video, size }: { video: Video; size: "small" | "medium" }) {
@@ -877,6 +882,7 @@ function VideoDetail({
   onOpenModel,
   onStageAction,
   onUpdated,
+  onDeleted,
   onNotice,
 }: {
   video: Video;
@@ -884,12 +890,34 @@ function VideoDetail({
   onOpenModel: (action: JobAction) => void;
   onStageAction: (id: string, action: StageAction) => void;
   onUpdated: (video: Video) => void;
+  onDeleted: (id: string) => void;
   onNotice: (message: string, kind?: NoticeKind) => void;
 }) {
   const [title, setTitle] = useState(video.title);
   const [creator, setCreator] = useState(video.creator);
   const [tags, setTags] = useState(video.tags.join(", "));
   const [detailsBusy, setDetailsBusy] = useState(false);
+  const [controlBusy, setControlBusy] = useState<"pause" | "resume" | "delete" | null>(null);
+  const [controlError, setControlError] = useState<string | null>(null);
+  const control = async (action: "pause" | "resume" | "delete") => {
+    if (controlBusy) return;
+    if (action === "delete" && !window.confirm("Permanently delete this video, all transcripts, media, and processing history? This cannot be undone.")) return;
+    setControlBusy(action);
+    setControlError(null);
+    try {
+      if (action === "delete") {
+        await api.deleteVideo(video.id);
+        onDeleted(video.id);
+      } else {
+        onUpdated(await (action === "pause" ? api.pauseVideo(video.id) : api.resumeVideo(video.id)));
+        onNotice(action === "pause" ? "Paused. Completed steps are kept for Resume." : "Processing resumed.", "success");
+      }
+    } catch (error) {
+      setControlError(errorMessage(error));
+    } finally {
+      setControlBusy(null);
+    }
+  };
   const [segments, setSegments] = useState<Segment[]>(video.transcript?.segments ?? []);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "conflict" | "locked">(video.transcript ? "saved" : "locked");
   const dirtyRef = useRef(false);
@@ -991,7 +1019,22 @@ function VideoDetail({
   return (
     <div className="detail-panel">
       <div className="detail-topline"><button className="back-button" onClick={onBack}><ArrowLeft size={16} /> <span>Library</span></button><span className="detail-id">{video.canonical_id}</span></div>
-      <div className="detail-source-head"><Thumb video={video} size="medium" /><div className="detail-source-copy"><div className="detail-platform">{platformLabel(video.platform)} <span>·</span> {formatDuration(video.duration_ms)}</div><h2>{video.title}</h2><span>{video.creator}</span></div><StageBadge stage={video.stage} /></div>
+      <div className="detail-source-head"><Thumb video={video} size="medium" /><div className="detail-source-copy"><div className="detail-platform">{platformLabel(video.platform)} <span>·</span> {formatDuration(video.duration_ms)}</div><h2>{video.title}</h2><span>{video.creator}</span></div><StageBadge stage={video.stage} paused={video.paused} /></div>
+
+      <div className="detail-section">
+        <div className="modal-actions">
+          {video.stage === "processing" ? <button type="button" className="button button-secondary" disabled={Boolean(controlBusy)} onClick={() => void control(video.paused ? "resume" : "pause")}>
+            {controlBusy === "pause" || controlBusy === "resume" ? <CircleNotch size={16} className="spin" /> : video.paused ? <Play size={16} /> : <Pause size={16} />}
+            {controlBusy === "pause" ? "Pausing…" : controlBusy === "resume" ? "Resuming…" : video.paused ? "Resume" : "Pause"}
+          </button> : null}
+          <button type="button" className="button button-secondary" disabled={Boolean(controlBusy)} onClick={() => void control("delete")}>
+            {controlBusy === "delete" ? <CircleNotch size={16} className="spin" /> : <Trash size={16} />}
+            {controlBusy === "delete" ? "Stopping & deleting…" : video.stage === "processing" && !video.paused ? "Stop & delete" : "Delete video"}
+          </button>
+        </div>
+        <p className="panel-copy">Delete removes this video's cached audio, video, transcripts, and history. Installed models are kept.</p>
+        {controlError ? <div className="inline-error" role="alert">{controlError}</div> : null}
+      </div>
 
       {video.error_message ? <div className={`error-card error-${video.error_code === "private_video" ? "private" : "general"}`}><WarningCircle size={18} weight="fill" /><div><strong>{video.error_code === "private_video" ? "Private source" : video.error_code === "uncertain_language" ? "Language needs review" : "Processing stopped"}</strong><span>{video.error_message}</span><small>{video.failed_step ? `Stopped at ${stepLabel(video.failed_step)}.` : "You can keep the link and try again when the source is available."}</small></div></div> : null}
       {video.stage === "complete" ? <div className="complete-card"><LockSimple size={18} weight="fill" /><div><strong>Read-only record</strong><span>Source media has been removed. Your transcript and edit history are retained.</span></div></div> : null}
@@ -1006,7 +1049,7 @@ function VideoDetail({
 
       <section className="detail-section history-section">
         <div className="detail-section-heading"><div><span className="section-eyebrow">Pipeline</span><h3>Processing history</h3></div>{nextAction ? <button className="button button-primary button-small" onClick={() => onOpenModel(nextAction)}><Play size={14} weight="fill" /> {actionLabel(nextAction)}</button> : null}</div>
-        {video.job?.state === "running" || video.job?.state === "queued" ? <div className="job-status"><CircleNotch size={16} className="spin" /><span><strong>{actionLabel(video.job.action)} in progress</strong><small>{stepLabel(video.job.current_step)} · {video.job.model_label}</small></span></div> : null}
+        {video.job?.state === "running" || video.job?.state === "queued" ? <div className="job-status">{video.paused ? <Pause size={16} /> : <CircleNotch size={16} className="spin" />}<span><strong>{video.paused ? "Paused — ready to resume" : `${actionLabel(video.job.action)} in progress`}</strong><small>{stepLabel(video.job.current_step)} · {video.job.model_label}</small></span></div> : null}
         <PipelineTimeline video={video} />
         {video.job ? <a className="export-link" href={`${API_BASE}/api/jobs/${encodeURIComponent(video.job.id)}/logs`} target="_blank" rel="noreferrer">View debug logs · current run</a> : null}
         {video.runs?.filter((run) => run.id !== video.job?.id).map((run) => <p key={`logs-${run.id}`}><a className="export-link" href={`${API_BASE}/api/jobs/${encodeURIComponent(run.id)}/logs`} target="_blank" rel="noreferrer">Debug logs · {run.model_label} · {formatDate(run.started_at)} · {run.id.slice(-6)}</a></p>)}
@@ -1044,7 +1087,7 @@ function PipelineTimeline({ video }: { video: Video }) {
       {PIPELINE_STEPS.map(([key, label], index) => {
         const completed = index < currentIndex;
         const failed = index === failedIndex;
-        return <div className={`pipeline-step ${completed ? "is-complete" : ""} ${failed ? "is-failed" : ""} ${index === currentIndex ? "is-current" : ""}`} key={key}><span className="pipeline-dot">{failed ? <WarningCircle size={12} weight="fill" /> : completed ? <Check size={12} weight="bold" /> : index === currentIndex ? <CircleNotch size={12} className="spin" /> : <span />}</span><span>{label}</span></div>;
+        return <div className={`pipeline-step ${completed ? "is-complete" : ""} ${failed ? "is-failed" : ""} ${index === currentIndex ? "is-current" : ""}`} key={key}><span className="pipeline-dot">{failed ? <WarningCircle size={12} weight="fill" /> : completed ? <Check size={12} weight="bold" /> : index === currentIndex ? (video.paused ? <Pause size={12} /> : <CircleNotch size={12} className="spin" />) : <span />}</span><span>{label}</span></div>;
       })}
     </div>
   );
@@ -1089,18 +1132,21 @@ function AddVideoDialog({
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
   const [submitted, setSubmitted] = useState(false);
 
   const inspect = async () => {
     if (!url.trim()) return;
+    setDialogError(null);
     setPreviewBusy(true);
     setSubmitted(true);
     try {
       setPreview(await api.preview(url.trim()));
     } catch (error) {
       setPreview(null);
+      setDialogError(errorMessage(error));
       onError(errorMessage(error), "error");
     } finally {
       setPreviewBusy(false);
@@ -1116,7 +1162,8 @@ function AddVideoDialog({
     setTagInput("");
   };
   const save = async () => {
-    if (!preview) return;
+    if (!preview || saveBusy) return;
+    setDialogError(null);
     setSaveBusy(true);
     try {
       const result = await api.createVideo({
@@ -1130,6 +1177,7 @@ function AddVideoDialog({
       });
       onSaved(result.video, result.duplicate);
     } catch (error) {
+      setDialogError(errorMessage(error));
       onError(errorMessage(error), "error");
     } finally {
       setSaveBusy(false);
@@ -1143,7 +1191,7 @@ function AddVideoDialog({
         <label className="field-label large-label">Video URL<div className="url-input-wrap"><LinkIcon /><input name="video-url" autoFocus value={url} onChange={(event) => { setUrl(event.target.value); setSubmitted(false); }} placeholder="https://www.instagram.com/reel/..." /><button className="button button-dark button-small" type="submit" disabled={previewBusy || !url.trim()}>{previewBusy ? <CircleNotch size={15} className="spin" /> : <MagnifyingGlass size={15} />} {previewBusy ? "Checking" : "Preview"}</button></div></label>
       </form>
       <div className="fixture-hint"><Info size={14} /><span>For local UI testing only, enable <code>ALLOW_FIXTURE_SOURCES=true</code> and use <code>fixture://tunisian-demo</code>.</span></div>
-      {submitted && !preview && !previewBusy ? <div className="inline-error"><WarningCircle size={16} /><span>Nothing to preview yet. Check the URL and try again.</span></div> : null}
+      {dialogError ? <div className="inline-error" role="alert"><WarningCircle size={16} /><span>{dialogError}</span></div> : submitted && !preview && !previewBusy ? <div className="inline-error" role="alert"><WarningCircle size={16} /><span>Nothing to preview yet. Check the URL and try again.</span></div> : null}
       {preview ? <div className="preview-block"><div className="preview-heading"><span className={`preview-status preview-${preview.status}`}>{preview.status === "ready" ? <CheckCircle size={14} weight="fill" /> : <WarningCircle size={14} weight="fill" />} {preview.status === "ready" ? "Metadata found" : preview.status === "private" ? "Private source" : "Metadata unknown"}</span><span>{platformLabel(preview.platform)} · {formatDuration(preview.duration_ms)}</span></div><div className="preview-content"><div className={`preview-thumb platform-${preview.platform}`}>{preview.thumbnail_url ? <img src={preview.thumbnail_url} alt="" /> : <Waveform size={23} weight="duotone" />}</div><div className="preview-copy"><strong>{preview.title || "Untitled video"}</strong><span>{preview.creator || "Creator unknown"}</span><small>{preview.message}</small></div></div><div className="preview-source"><span title={preview.canonical_url}>{preview.canonical_url}</span><span>{preview.metadata_source || "No metadata adapter result"}</span></div></div> : null}
       {preview ? <>
         <div className="tag-editor"><div className="field-label"><span>Tags <small>optional</small></span><div className="tag-input-wrap"><Tag size={15} /><input name="video-tag" value={tagInput} onChange={(event) => setTagInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addTag(); } }} placeholder="Add a tag" />{tagInput ? <button type="button" onClick={() => addTag()}><Plus size={14} /></button> : null}</div></div><div className="tag-suggestions">{suggestedTags.filter((tag) => !tags.includes(tag)).slice(0, 5).map((tag) => <button type="button" key={tag} onClick={() => addTag(tag)}>{tag}</button>)}{tags.map((tag) => <button type="button" className="tag-chip selected-chip" key={tag} onClick={() => setTags((current) => current.filter((item) => item !== tag))}>{tag} <X size={11} /></button>)}</div></div>
@@ -1153,46 +1201,12 @@ function AddVideoDialog({
   </motion.div>;
 }
 
-function ModelDialog({
-  action,
-  count,
-  hasManualEdits,
-  models,
-  busy,
-  onClose,
-  onSubmit,
-}: {
-  action: JobAction;
-  count: number;
-  hasManualEdits: boolean;
-  models: ModelOption[];
-  busy: boolean;
-  onClose: () => void;
-  onSubmit: (modelKey: "farukstt" | "whisper_large_v3", ownerAsserted: boolean) => void;
-}) {
-  const [selectedModel, setSelectedModel] = useState<"farukstt" | "whisper_large_v3" | null>(null);
-  const [ownerAsserted, setOwnerAsserted] = useState(false);
-  const selectedOption = models.find((model) => model.key === selectedModel);
-  return <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
-    <motion.div className="modal-card model-modal" initial={{ opacity: 0, y: 14, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.22 }}>
-      <div className="modal-header"><div><span className="section-eyebrow">{actionLabel(action)} · {count} item{count === 1 ? "" : "s"}</span><h2>Choose a recognition model</h2><p>This choice is recorded on the run. Select one before processing starts.</p></div><button className="icon-button" onClick={onClose} disabled={busy} aria-label="Close model dialog"><X size={19} /></button></div>
-      <div className="model-choice-grid">
-        {models.map((model) => { const selected = selectedModel === model.key; return <button type="button" key={model.key} className={`model-choice ${selected ? "is-selected" : ""}`} onClick={() => setSelectedModel(model.key)}><span className={`model-choice-mark ${model.key === "farukstt" ? "symbol-saffron" : "symbol-ink"}`}>{model.key === "farukstt" ? <Waveform size={20} weight="duotone" /> : <TextT size={20} weight="bold" />}</span><span className="model-choice-copy"><strong>{model.label}</strong><span>{model.description}</span><small>{model.source}</small></span><span className={`selection-ring ${selected ? "is-selected" : ""}`}>{selected ? <Check size={13} weight="bold" /> : null}</span><span className={`model-ready-note ${model.available ? "ready" : "setup"}`}>{model.available ? "Runtime ready" : "Needs local setup"}</span></button>; })}
-      </div>
-      {action === "reprocess" && hasManualEdits ? <div className="model-warning"><WarningCircle size={17} weight="fill" /><div><strong>Manual edits found</strong><span>A successful reprocess creates a fresh recognition draft. Your current edited transcript stays available in the revision history until the new result succeeds.</span></div></div> : null}
-      <div className="model-test-note"><Info size={16} /><div><strong>Testing note</strong><span>Fixture sources can exercise either choice without loading a model. Real media requires the selected model's local runtime and files.</span></div></div>
-      <label className="confirm-check"><input name="tunisian-confirmation" type="checkbox" checked={ownerAsserted} onChange={(event) => setOwnerAsserted(event.target.checked)} /><span><strong>I confirm this video is primarily Tunisian Arabic.</strong><small>The local app does not bundle a dialect classifier, so this confirmation is recorded as an owner assertion—not language proof.</small></span></label>
-      <div className="modal-footer"><span className="modal-footnote"><ShieldCheck size={15} /> Local processing · draft output</span><div className="modal-actions"><button className="button button-secondary" onClick={onClose} disabled={busy}>Cancel</button><button className="button button-primary" disabled={!selectedOption || !ownerAsserted || busy} onClick={() => selectedModel && onSubmit(selectedModel, ownerAsserted)}>{busy ? <CircleNotch size={16} className="spin" /> : <Play size={16} weight="fill" />} {busy ? "Queueing" : `${actionLabel(action)} now`}</button></div></div>
-    </motion.div>
-  </motion.div>;
-}
-
 function LinkIcon() {
   return <span className="link-icon"><ArrowRight size={16} /></span>;
 }
 
 function SettingsPage({ models, theme, onThemeChange }: { models: ModelOption[]; theme: Theme; onThemeChange: (theme: Theme) => void }) {
-  return <div className="view-stack settings-view"><div className="page-heading compact-heading"><div><span className="eyebrow"><GearSix size={14} weight="fill" /> Workspace setup</span><h1>Settings</h1><p className="page-lede">Small choices that keep this local library predictable.</p></div></div><div className="settings-grid"><section className="panel settings-panel"><div className="panel-heading"><div><span className="section-eyebrow">Recognition</span><h2>Local model readiness</h2></div><Lightning size={18} className="panel-heading-icon" weight="duotone" /></div><p className="panel-copy">Both models remain explicit choices at processing time. Setup status is informational; fixture tests can still compare the two paths.</p><div className="settings-model-list">{models.map((model) => <div className="settings-model" key={model.key}><div className={`model-symbol ${model.key === "farukstt" ? "symbol-saffron" : "symbol-ink"}`}>{model.key === "farukstt" ? <Waveform size={18} /> : <TextT size={18} weight="bold" />}</div><div><strong>{model.label}</strong><span>{model.source}</span><small>{model.availability_note}</small></div><span className={`ready-pill ${model.available ? "is-ready" : "is-pending"}`}>{model.available ? "Ready" : "Setup"}</span></div>)}</div></section><section className="panel settings-panel"><div className="panel-heading"><div><span className="section-eyebrow">Appearance</span><h2>Choose a surface</h2></div><Palette size={18} className="panel-heading-icon" weight="duotone" /></div><p className="panel-copy">The workspace remembers this choice in your browser. Motion follows your system's reduced-motion preference.</p><ThemeMenu theme={theme} onChange={onThemeChange} /><div className="settings-rule" /><div className="privacy-row"><ShieldCheck size={20} weight="duotone" /><div><strong>Local by design</strong><span>SQLite, local artifacts, and a local worker. No account or hosted transcript service is configured.</span></div></div></section><section className="panel settings-panel full-settings"><div className="panel-heading"><div><span className="section-eyebrow">Acquisition</span><h2>Working download path</h2></div><HardDrives size={18} className="panel-heading-icon" weight="duotone" /></div><div className="acquisition-grid"><div><span className="setting-label">URL metadata</span><strong>yt-dlp + web_embedded</strong><small>Metadata inspection uses the web embedded extractor argument.</small></div><div><span className="setting-label">Media download</span><strong><code>yta</code> login-shell function</strong><small>The worker invokes <code>zsh -lic 'yta "$@"'</code>, so your wrapper's embedding, Node.js runtime, retries, metadata, and thumbnail options remain active.</small></div><div><span className="setting-label">Audio preparation</span><strong>FFmpeg · mono 16 kHz WAV</strong><small>Recognition gets a stable local audio artifact and can resume from checkpoints.</small></div></div></section></div></div>;
+  return <div className="view-stack settings-view"><div className="page-heading compact-heading"><div><span className="eyebrow"><GearSix size={14} weight="fill" /> Workspace setup</span><h1>Settings</h1><p className="page-lede">Small choices that keep this local library predictable.</p></div></div><div className="settings-grid"><section className="panel settings-panel"><div className="panel-heading"><div><span className="section-eyebrow">Recognition</span><h2>Local model readiness</h2></div><Lightning size={18} className="panel-heading-icon" weight="duotone" /></div><p className="panel-copy">FarukSTT is the default for every Tunisian Arabic video. Processing starts directly with this local model.</p><div className="settings-model-list">{models.map((model) => <div className="settings-model" key={model.key}><div className={`model-symbol ${model.key === "farukstt" ? "symbol-saffron" : "symbol-ink"}`}>{model.key === "farukstt" ? <Waveform size={18} /> : <TextT size={18} weight="bold" />}</div><div><strong>{model.label}</strong><span>{model.source}</span><small>{model.availability_note}</small></div><span className={`ready-pill ${model.available ? "is-ready" : "is-pending"}`}>{model.available ? "Ready" : "Setup"}</span></div>)}</div></section><section className="panel settings-panel"><div className="panel-heading"><div><span className="section-eyebrow">Appearance</span><h2>Choose a surface</h2></div><Palette size={18} className="panel-heading-icon" weight="duotone" /></div><p className="panel-copy">The workspace remembers this choice in your browser. Motion follows your system's reduced-motion preference.</p><ThemeMenu theme={theme} onChange={onThemeChange} /><div className="settings-rule" /><div className="privacy-row"><ShieldCheck size={20} weight="duotone" /><div><strong>Local by design</strong><span>SQLite, local artifacts, and a local worker. No account or hosted transcript service is configured.</span></div></div></section><section className="panel settings-panel full-settings"><div className="panel-heading"><div><span className="section-eyebrow">Acquisition</span><h2>Working download path</h2></div><HardDrives size={18} className="panel-heading-icon" weight="duotone" /></div><div className="acquisition-grid"><div><span className="setting-label">URL metadata</span><strong>yt-dlp + web_embedded</strong><small>Metadata inspection uses the web embedded extractor argument.</small></div><div><span className="setting-label">Media download</span><strong>Local downloader tools</strong><small>Instagram and Facebook use the configured audio wrapper. TikTok uses the installed gallery-dl adapter. Tools are installed during setup, with your approval.</small></div><div><span className="setting-label">Audio preparation</span><strong>FFmpeg · mono 16 kHz WAV</strong><small>Recognition gets a stable local audio artifact and can resume from checkpoints.</small></div></div></section></div></div>;
 }
 
 function ThemeMenu({ theme, onChange, compact = false }: { theme: Theme; onChange: (theme: Theme) => void; compact?: boolean }) {
@@ -1200,4 +1214,87 @@ function ThemeMenu({ theme, onChange, compact = false }: { theme: Theme; onChang
   const current = THEME_OPTIONS.find((option) => option.key === theme) ?? THEME_OPTIONS[0];
   const Icon = current.icon;
   return <div className={`theme-menu ${compact ? "theme-menu-compact" : ""}`}><button className="theme-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open}><Icon size={16} weight="duotone" /><span>{compact ? "" : current.label}</span><CaretDown size={13} /></button>{open ? <div className="theme-popover">{THEME_OPTIONS.map((option) => { const OptionIcon = option.icon; return <button key={option.key} className={option.key === theme ? "is-selected" : ""} onClick={() => { onChange(option.key); setOpen(false); }}><OptionIcon size={16} weight="duotone" /><span>{option.label}</span>{option.key === theme ? <Check size={14} /> : null}</button>; })}</div> : null}</div>;
+}
+
+function ResultsPage({ videos, loading, search, onSearch, onNotice, onDeleted }: {
+  videos: Video[]; loading: boolean; search: string; onSearch: (value: string) => void;
+  onNotice: (message: string, kind?: NoticeKind) => void; onDeleted: (id: string) => void;
+}) {
+  const [creator, setCreator] = useState("");
+  const [tag, setTag] = useState("");
+  const [platform, setPlatform] = useState("");
+  const [duration, setDuration] = useState("");
+  const [after, setAfter] = useState("");
+  const [before, setBefore] = useState("");
+  const ready = videos.filter((video) => ["processed", "done", "complete"].includes(video.stage) && video.transcript);
+  const creators = Array.from(new Set(ready.map((video) => video.creator).filter(Boolean))).sort();
+  const platforms = Array.from(new Set(ready.map((video) => video.platform))).sort();
+  const needle = search.trim().toLocaleLowerCase();
+  const invalidDates = Boolean(after && before && after > before);
+  const filtered = ready.filter((video) => {
+    const ms = video.duration_ms;
+    const date = new Date(video.saved_at);
+    const localDate = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    return !invalidDates && (!creator || video.creator === creator) && (!tag || video.tags.includes(tag)) && (!platform || video.platform === platform)
+      && (!after || localDate >= after) && (!before || localDate <= before)
+      && (!duration || (ms != null && (duration === "short" ? ms < 60000 : duration === "medium" ? ms >= 60000 && ms < 180000 : ms >= 180000)))
+      && (!needle || [video.title, video.creator, video.platform, ...video.tags, ...(video.transcript?.segments.map((segment) => segment.text) ?? [])].join(" ").toLocaleLowerCase().includes(needle));
+  });
+  const hasFilters = Boolean(search || creator || tag || platform || duration || after || before);
+  return <div className="view-stack results-view">
+    <div className="page-heading"><div><span className="eyebrow"><CheckCircle size={15} weight="fill" /> Ready to use</span><h1>Résultat</h1><p className="page-lede">Every finished video. Every word, in one place.</p></div><span className="results-total"><FileText size={18} /> {ready.length} completed {ready.length === 1 ? "video" : "videos"}</span></div>
+    <section className="results-filters panel" aria-label="Filter results">
+      <label className="results-search"><MagnifyingGlass size={18} /><input aria-label="Search results" placeholder="Search titles, creators, or transcript…" value={search} onChange={(event) => onSearch(event.target.value)} /></label>
+      <div className="results-filter-fields">
+        <label>Creator<select value={creator} onChange={(event) => setCreator(event.target.value)}><option value="">All creators</option>{creators.map((value) => <option key={value}>{value}</option>)}</select></label>
+        <label>Tag<select value={tag} onChange={(event) => setTag(event.target.value)}><option value="">All tags</option>{tagNames(ready).map((value) => <option key={value}>{value}</option>)}</select></label>
+        <label>Platform<select value={platform} onChange={(event) => setPlatform(event.target.value)}><option value="">All platforms</option>{platforms.map((value) => <option key={value} value={value}>{platformLabel(value)}</option>)}</select></label>
+        <label>Duration<select value={duration} onChange={(event) => setDuration(event.target.value)}><option value="">Any duration</option><option value="short">Under 1 minute</option><option value="medium">1–3 minutes</option><option value="long">3 minutes or more</option></select></label>
+        <label>Saved from<input type="date" value={after} onChange={(event) => setAfter(event.target.value)} /></label>
+        <label>Saved through<input type="date" value={before} onChange={(event) => setBefore(event.target.value)} /></label>
+      </div>
+      {invalidDates ? <p role="alert">The end date must be on or after the start date.</p> : null}
+      <div className="results-filter-summary"><span role="status">{loading ? "Loading results…" : `${filtered.length} of ${ready.length} videos`}</span>{hasFilters ? <button className="button button-quiet button-small" onClick={() => { onSearch(""); setCreator(""); setTag(""); setPlatform(""); setDuration(""); setAfter(""); setBefore(""); }}>Clear filters <X size={14} /></button> : <span>Full transcripts · ready to copy</span>}</div>
+    </section>
+    {loading ? <div className="results-empty"><CircleNotch className="spin" size={28} /><h2>Loading your results</h2></div> : filtered.length ? <div className="results-grid">{filtered.map((video) => <ResultCard key={video.id} video={video} onNotice={onNotice} onDeleted={onDeleted} />)}</div> : <div className="results-empty panel"><FileText size={32} weight="duotone" /><h2>{ready.length ? "No matching videos" : "Your finished videos will appear here"}</h2><p>{ready.length ? "Try another filter or clear your selection." : "Process a video in Library with FarukSTT. Once the full pipeline finishes, its transcript is ready here."}</p></div>}
+  </div>;
+}
+
+function ResultCard({ video, onNotice, onDeleted }: { video: Video; onNotice: (message: string, kind?: NoticeKind) => void; onDeleted: (id: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const [thumbnailFailed, setThumbnailFailed] = useState(false);
+  const cardRef = useRef<HTMLElement | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reducedMotion = useReducedMotion();
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const transcript = video.transcript?.segments.map((segment) => segment.text).join("\n") ?? "";
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(transcript);
+      setCopied(true);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 2000);
+    } catch { onNotice("Could not copy the transcript. Please try again or select the text to copy it.", "error"); }
+  };
+  const remove = async () => {
+    if (deleting || !window.confirm(`Permanently delete “${video.title || "Untitled video"}”?\n\nThis removes the video, all transcripts and edits, cached media, tags attached to this video, and processing history. This cannot be undone.`)) return;
+    setDeleting(true);
+    try { await api.deleteVideo(video.id); onDeleted(video.id); onNotice("Video and all related data deleted.", "success"); }
+    catch (error) { onNotice(errorMessage(error), "error"); setDeleting(false); }
+  };
+  const toggleExpanded = () => {
+    if (expanded && cardRef.current && cardRef.current.getBoundingClientRect().top < 0) cardRef.current.scrollIntoView({ block: "start", behavior: reducedMotion ? "instant" : "smooth" });
+    setExpanded((value) => !value);
+  };
+  return <motion.article ref={cardRef} layout transition={{ duration: reducedMotion ? 0 : 0.25 }} className={`result-card panel ${expanded ? "is-expanded" : "is-compact"}`} aria-label={video.title || "Untitled video"}>
+    <div className="result-card-top"><span className="result-ready"><CheckCircle size={14} weight="fill" /> Pipeline complete</span><button className="result-delete icon-button" aria-label={`Delete ${video.title || "video"}`} title="Delete video permanently" disabled={deleting} onClick={() => void remove()}>{deleting ? <CircleNotch size={18} className="spin" /> : <Trash size={18} />}</button></div>
+    <div className="result-cover-heading"><div className="result-cover">{video.thumbnail_url && !thumbnailFailed ? <img src={`${API_BASE}/api/videos/${encodeURIComponent(video.id)}/thumbnail`} alt={`Thumbnail for ${video.title || "video"}`} loading="lazy" onError={() => setThumbnailFailed(true)} /> : <div className="result-cover-fallback"><Play size={25} weight="fill" /><span>No preview</span></div>}</div><div className="result-heading-copy"><dl className="result-meta"><div><dt>Platform</dt><dd>{platformLabel(video.platform)}</dd></div>{video.duration_ms != null ? <div><dt>Duration</dt><dd><Clock size={14} /> {formatDuration(video.duration_ms)}</dd></div> : null}</dl>
+    <h2 className="result-title" dir="auto">{video.title || "Untitled video"}</h2></div></div>
+    <dl className="result-details">{video.creator ? <div><dt>Creator</dt><dd dir="auto">{video.creator}</dd></div> : null}<div><dt>Tags</dt><dd className="result-tags">{video.tags.length ? video.tags.map((tag) => <span className="tag-chip" key={tag} dir="auto">{tag}</span>) : <span className="result-muted">No tags</span>}</dd></div></dl>
+    <section className="result-transcript" id={`result-transcript-${video.id}`}><div className="result-transcript-heading"><h3>Transcript draft</h3><button className={`button button-small result-copy ${copied ? "is-copied" : "button-secondary"}`} onClick={() => void copy()} aria-label={copied ? "Copied!" : "Copy transcript"}><motion.span key={String(copied)} initial={reducedMotion ? false : { scale: 0.6, rotate: -25 }} animate={{ scale: 1, rotate: 0 }} transition={{ type: "spring", stiffness: 420, damping: 18 }}>{copied ? <Check size={16} weight="bold" /> : <CopySimple size={16} />}</motion.span><span aria-live="polite">{copied ? "Copied!" : "Copy"}</span></button></div><motion.div initial={false} animate={{ height: expanded ? "auto" : 88 }} transition={{ duration: reducedMotion ? 0 : 0.25 }} className="result-transcript-body"><p className="result-transcript-text" dir="auto">{transcript}</p></motion.div></section>
+    <button className="button result-expand" aria-expanded={expanded} aria-controls={`result-transcript-${video.id}`} onClick={toggleExpanded}>{expanded ? <ArrowsInSimple size={17} /> : <ArrowsOutSimple size={17} />} {expanded ? "Compact card" : "Expand card"}<span>{expanded ? "Less" : "Full transcript"}</span></button>
+    <footer className="result-footer"><span>Saved {formatDate(video.saved_at)}</span><a className="export-link" href={video.canonical_url} target="_blank" rel="noreferrer">Open source <ArrowRight size={14} /></a></footer>
+  </motion.article>;
 }

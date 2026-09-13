@@ -22,3 +22,11 @@ data/browser-runs/
 data/logs/
 frontend/.next/
 frontend/node_modules/
+
+desktop/payload/
+desktop/python-download/
+desktop/dist/
+frontend/.next-desktop/
+frontend/out/
+desktop/python-alternative/
+desktop/Kite.iconset/

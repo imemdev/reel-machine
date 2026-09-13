@@ -61,6 +61,15 @@ class Repository:
         with self.connection() as connection:
             connection.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS notes (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    script TEXT NOT NULL DEFAULT '',
+                    done INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS videos (
                     id TEXT PRIMARY KEY,
                     platform TEXT NOT NULL,
@@ -164,6 +173,9 @@ class Repository:
                 CREATE INDEX IF NOT EXISTS activities_created_idx ON activities(created_at DESC);
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(videos)")}
+            if "paused" not in columns:
+                connection.execute("ALTER TABLE videos ADD COLUMN paused INTEGER NOT NULL DEFAULT 0")
             connection.commit()
 
     def _activity(
@@ -710,15 +722,71 @@ class Repository:
             connection.commit()
         return self.hydrate_video(video_id)
 
+    def set_paused(self, video_id: str, paused: bool) -> dict[str, Any]:
+        with self.connection() as connection:
+            self.begin(connection)
+            video = self._video_row(connection, video_id)
+            if video["stage"] != "processing":
+                raise ConflictError("Only processing videos can be paused or resumed")
+            connection.execute("UPDATE videos SET paused = ?, updated_at = ?, version = version + 1 WHERE id = ?", (int(paused), now(), video_id))
+            connection.execute("UPDATE runs SET state = 'queued', updated_at = ? WHERE id = ?", (now(), video["active_run_id"]))
+            self._activity(connection, video_id=video_id, kind="paused" if paused else "processing", message="Processing paused" if paused else "Processing resumed")
+            connection.commit()
+        return self.hydrate_video(video_id)
+
     def delete_video(self, video_id: str) -> None:
         with self.connection() as connection:
             self.begin(connection)
             video = self._video_row(connection, video_id)
-            if video["stage"] == "complete":
-                raise ConflictError("Complete records cannot be deleted in this release; retained transcript ownership is permanent")
+            if video["stage"] == "processing" and not video["paused"]:
+                raise ConflictError("Stop processing before deleting video data")
+            # Remove files before committing the row deletion so filesystem failures
+            # leave a record that can be retried. The worker has already been stopped.
+            if self.artifact_root:
+                target = self.artifact_root / video_id
+                if target.is_symlink():
+                    target.unlink()
+                elif target.is_dir() and target.parent == self.artifact_root:
+                    shutil.rmtree(target)
+            tag_ids = [row[0] for row in connection.execute("SELECT tag_id FROM video_tags WHERE video_id = ?", (video_id,))]
             connection.execute("DELETE FROM videos WHERE id = ?", (video_id,))
+            for tag_id in tag_ids:
+                connection.execute("DELETE FROM tags WHERE id = ? AND NOT EXISTS (SELECT 1 FROM video_tags WHERE tag_id = tags.id)", (tag_id,))
             connection.commit()
-        if self.artifact_root:
-            target = self.artifact_root / video_id
-            if target.is_dir() and target.parent == self.artifact_root:
-                shutil.rmtree(target)
+
+    def list_notes(self) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute("SELECT * FROM notes ORDER BY created_at DESC, rowid DESC").fetchall()
+        return [dict(row) | {"done": bool(row["done"])} for row in rows]
+
+    def create_note(self, title: str, description: str, script: str) -> dict[str, Any]:
+        note = dict(id=new_id("note"), title=title, description=description, script=script,
+                    done=False, created_at=now(), updated_at=now())
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO notes (id, title, description, script, done, created_at, updated_at) VALUES (:id, :title, :description, :script, :done, :created_at, :updated_at)", note,
+            )
+            connection.commit()
+        return note
+
+    def update_note(self, note_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+        with self.connection() as connection:
+            self.begin(connection)
+            row = connection.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+            if row is None:
+                raise NotFoundError("Note not found")
+            note = dict(row)
+            note.update({key: value for key, value in changes.items() if key in {"title", "description", "script", "done"}})
+            note["updated_at"] = now()
+            connection.execute(
+                "UPDATE notes SET title=:title, description=:description, script=:script, done=:done, updated_at=:updated_at WHERE id=:id", note,
+            )
+            connection.commit()
+        return note | {"done": bool(note["done"])}
+
+    def delete_note(self, note_id: str) -> None:
+        with self.connection() as connection:
+            result = connection.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+            if not result.rowcount:
+                raise NotFoundError("Note not found")
+            connection.commit()

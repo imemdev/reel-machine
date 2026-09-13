@@ -1,0 +1,10 @@
+#!/bin/zsh
+# Start both services without installing or downloading dependencies.
+set -eu
+project_root="${0:A:h:h}"
+cd "$project_root"
+if [[ ! -x .venv/bin/python || ! -d frontend/node_modules ]]; then
+  print -u2 'Missing project dependencies. See README.md; installation requires your approval.'
+  exit 1
+fi
+exec .venv/bin/python scripts/run_local.py

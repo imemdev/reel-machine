@@ -4,12 +4,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 
 from .db import ConflictError, NotFoundError, RepositoryError, Repository, STAGES, STAGE_ORDER
 from .metadata import inspect_video
+from .thumbnails import cache_thumbnail, saved_thumbnail
 from .pipeline import (
     MODEL_OPTIONS,
     PRIVATE_VIDEO_MESSAGE,
@@ -22,6 +23,8 @@ from .schemas import (
     BatchRequest,
     BatchStageActionRequest,
     PreviewRequest,
+    NoteCreateRequest,
+    NoteUpdateRequest,
     TranscriptUpdateRequest,
     VideoActionRequest,
     VideoCreateRequest,
@@ -60,6 +63,7 @@ def serialize_video(video: dict[str, Any], *, runs: list[dict[str, Any]] | None 
         "thumbnail_url": video["display_thumbnail_url"] or video["captured_thumbnail_url"],
         "duration_ms": video["duration_ms"],
         "stage": video["stage"],
+        "paused": bool(video.get("paused", False)),
         "error_code": video["error_code"],
         "error_message": video["error_message"],
         "failed_step": video["failed_step"],
@@ -135,6 +139,24 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
         status_code = 404 if isinstance(error, NotFoundError) else 409
         return PlainTextResponse(str(error), status_code=status_code)
 
+    @app.get("/api/notes")
+    def list_notes() -> dict[str, Any]:
+        items = repository.list_notes()
+        return {"items": items, "count": len(items)}
+
+    @app.post("/api/notes", status_code=201)
+    def create_note(payload: NoteCreateRequest) -> dict[str, Any]:
+        return repository.create_note(**payload.model_dump())
+
+    @app.patch("/api/notes/{note_id}")
+    def update_note(note_id: str, payload: NoteUpdateRequest) -> dict[str, Any]:
+        return repository.update_note(note_id, payload.model_dump(exclude_unset=True))
+
+    @app.delete("/api/notes/{note_id}", status_code=204)
+    def delete_note(note_id: str) -> Response:
+        repository.delete_note(note_id)
+        return Response(status_code=204)
+
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         return {
@@ -184,7 +206,7 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
             raise _error(str(error), error.code, 422) from error
 
     @app.post("/api/videos", status_code=201)
-    def create_video(payload: VideoCreateRequest) -> dict[str, Any]:
+    def create_video(payload: VideoCreateRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
         try:
             identity = canonicalize_url(payload.url, allow_fixture=settings.allow_fixture_sources)
         except URLValidationError as error:
@@ -201,6 +223,7 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
             duration_ms=payload.duration_ms,
             tags=_clean_tags(payload.tags),
         )
+        background_tasks.add_task(cache_thumbnail, repository, video["id"])
         return {"duplicate": duplicate, "video": serialize_video(video)}
 
     @app.get("/api/videos")
@@ -224,6 +247,16 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
         except NotFoundError as error:
             raise _error("Video not found", "not_found", 404) from error
 
+    @app.get("/api/videos/{video_id}/thumbnail")
+    def thumbnail(video_id: str) -> Response:
+        try:
+            data, media_type = saved_thumbnail(repository, video_id)
+        except NotFoundError as error:
+            raise _error("Video not found", "not_found", 404) from error
+        except (OSError, ValueError) as error:
+            raise _error("Thumbnail unavailable", "thumbnail_unavailable", 404) from error
+        return Response(data, media_type=media_type, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
     @app.patch("/api/videos/{video_id}")
     def update_video(video_id: str, payload: VideoUpdateRequest) -> dict[str, Any]:
         try:
@@ -243,11 +276,29 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
     @app.delete("/api/videos/{video_id}", status_code=204)
     def delete_video(video_id: str) -> None:
         try:
-            repository.delete_video(video_id)
+            current.worker.delete_video(video_id)
         except NotFoundError as error:
             raise _error("Video not found", "not_found", 404) from error
         except ConflictError as error:
-            raise _error(str(error), "complete_retention", 409) from error
+            raise _error(str(error), "delete_conflict", 409) from error
+
+    @app.post("/api/videos/{video_id}/pause")
+    def pause_video(video_id: str) -> dict[str, Any]:
+        try:
+            return serialize_video(current.worker.pause(video_id))
+        except NotFoundError as error:
+            raise _error("Video not found", "not_found", 404) from error
+        except ConflictError as error:
+            raise _error(str(error), "pause_conflict", 409) from error
+
+    @app.post("/api/videos/{video_id}/resume")
+    def resume_video(video_id: str) -> dict[str, Any]:
+        try:
+            return serialize_video(current.worker.resume(video_id))
+        except NotFoundError as error:
+            raise _error("Video not found", "not_found", 404) from error
+        except ConflictError as error:
+            raise _error(str(error), "resume_conflict", 409) from error
 
     @app.post("/api/jobs", status_code=202)
     def create_jobs(payload: BatchRequest) -> dict[str, Any]:

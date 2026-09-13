@@ -1,0 +1,44 @@
+{
+  "name": "kite-desktop",
+  "productName": "Kite",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Tunisian Arabic video library",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "package": "electron-builder --mac dir --arm64"
+  },
+  "build": {
+    "appId": "local.kite.library",
+    "productName": "Kite",
+    "files": [
+      "main.cjs",
+      "package.json",
+      "migration.json"
+    ],
+    "extraResources": [
+      {
+        "from": "payload",
+        "to": "payload",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**"
+        ]
+      }
+    ],
+    "mac": {
+      "target": "dir",
+      "category": "public.app-category.productivity",
+      "identity": null,
+      "icon": "icon.icns"
+    },
+    "directories": {
+      "output": "dist"
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3"
+  }
+}

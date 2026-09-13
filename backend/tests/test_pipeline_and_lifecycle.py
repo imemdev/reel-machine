@@ -6,7 +6,7 @@ import json
 import sys
 import pytest
 
-from backend.app.pipeline import PipelineError, _run_logged, gallery_dl_command, yta_command
+from backend.app.pipeline import PipelineError, _local_faruk_ready, _run_logged, gallery_dl_command, tiktok_audio_command, yta_command
 from backend.app.runtime import build_runtime
 from backend.app.settings import load_settings
 from backend.app.urls import canonicalize_url
@@ -165,6 +165,29 @@ def test_tiktok_selector_prefers_video_audio_not_dash_video_or_music():
     }) == ["https://cdn/high", "https://cdn/backup", "https://cdn/low", "https://cdn/muxed"]
     assert audio_urls({}) == []
     assert audio_urls({"playAddr": "file:///etc/passwd"}) == []
+
+
+def test_tiktok_uses_installed_environment_without_package_downloads(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.app.pipeline.importlib.util.find_spec", lambda name: object())
+    command = tiktok_audio_command(source_url="https://www.tiktok.com/@example/video/123", directory=tmp_path)
+    assert command[0] == sys.executable
+    assert Path(command[1]).name == "tiktok_audio.py"
+    assert "uvx" not in command
+    monkeypatch.setattr("backend.app.pipeline.importlib.util.find_spec", lambda name: None)
+    with pytest.raises(PipelineError, match="downloads extra"):
+        tiktok_audio_command(source_url="https://www.tiktok.com/@example/video/123", directory=tmp_path)
+
+
+def test_faruk_readiness_requires_complete_local_files(tmp_path):
+    for name in ("config.json", "preprocessor_config.json", "tokenizer_config.json"):
+        (tmp_path / name).write_text("{}")
+    (tmp_path / "model.safetensors.part").write_bytes(b"partial")
+    assert not _local_faruk_ready(str(tmp_path))
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {"a": "shard-1.safetensors", "b": "shard-2.safetensors"}}))
+    (tmp_path / "shard-1.safetensors").write_bytes(b"a")
+    assert not _local_faruk_ready(str(tmp_path))
+    (tmp_path / "shard-2.safetensors").write_bytes(b"b")
+    assert _local_faruk_ready(str(tmp_path))
 
 
 def test_missing_audio_retry_invalidates_download_but_keeps_old_artifact(runtime):

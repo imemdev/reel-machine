@@ -5,19 +5,52 @@ from fastapi.testclient import TestClient
 from backend.app.main import create_app
 
 
-def test_api_requires_explicit_tunisian_confirmation_and_accepts_model_choice(runtime) -> None:
+def test_save_preview_with_long_social_caption_and_retry_is_idempotent(runtime, monkeypatch):
+    client = TestClient(create_app(runtime, start_worker=False))
+    caption = "حكاية تونسية مع تفاصيل كثيرة — " * 100
+    preview = {
+        "url": "https://www.tiktok.com/@example/video/6718335390845095173",
+        "title": caption,
+        "creator": "Example",
+        "thumbnail_url": None,
+        "duration_ms": 12000,
+        "source_page_url": None,
+    }
+    monkeypatch.setattr("backend.app.main.inspect_video", lambda url, settings: preview)
+    metadata = client.post("/api/videos/preview", json={"url": preview["url"]})
+    assert metadata.status_code == 200
+    saved = client.post("/api/videos", json={**metadata.json(), "tags": ["Testing"]})
+    assert saved.status_code == 201, saved.text
+    video = saved.json()["video"]
+    assert video["stage"] == "inbox"
+    assert video["title"] == caption
+    assert video["job"] is None
+    repeated = client.post("/api/videos", json={**metadata.json(), "tags": []})
+    assert repeated.status_code == 201
+    assert repeated.json()["duplicate"] is True
+    assert repeated.json()["video"]["id"] == video["id"]
+    assert client.get("/api/videos").json()["count"] == 1
+
+
+def test_save_still_rejects_unbounded_caption(runtime):
+    client = TestClient(create_app(runtime, start_worker=False))
+    response = client.post("/api/videos", json={"url": "fixture://long-caption", "title": "x" * 20_001})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "title"]
+
+
+def test_api_defaults_to_faruk_without_confirmation_and_rejects_whisper(runtime) -> None:
     client = TestClient(create_app(runtime, start_worker=False))
     saved = client.post("/api/videos", json={"url": "fixture://tunisian-demo", "tags": []})
     assert saved.status_code == 201
     video_id = saved.json()["video"]["id"]
 
-    missing_confirmation = client.post("/api/jobs", json={"video_ids": [video_id], "action": "process", "model_key": "farukstt"})
-    assert missing_confirmation.status_code == 422
-    assert missing_confirmation.json()["detail"]["code"] == "tunisian_confirmation_required"
-
-    accepted = client.post("/api/jobs", json={"video_ids": [video_id], "action": "process", "model_key": "whisper_large_v3", "owner_asserted_tunisian": True})
+    rejected = client.post("/api/jobs", json={"video_ids": [video_id], "action": "process", "model_key": "whisper_large_v3"})
+    assert rejected.status_code == 422
+    assert [model["key"] for model in client.get("/api/config").json()["models"]] == ["farukstt"]
+    accepted = client.post("/api/jobs", json={"video_ids": [video_id], "action": "process"})
     assert accepted.status_code == 202
-    assert accepted.json()["accepted"][0]["model_key"] == "whisper_large_v3"
+    assert accepted.json()["accepted"][0]["model_key"] == "farukstt"
     run_id = accepted.json()["accepted"][0]["id"]
     queued = client.get(f"/api/jobs/{run_id}/logs")
     assert queued.status_code == 200

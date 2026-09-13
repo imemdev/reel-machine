@@ -8,12 +8,17 @@ version = "0.1.0"
 description = "Local-only social video library and Tunisian Arabic transcript workspace"
 requires-python = ">=3.12"
 dependencies = [
+  "certifi>=2026.1.4",
   "fastapi==0.141.1",
   "uvicorn[standard]==0.52.4",
   "pydantic==2.12.5",
 ]
 
 [project.optional-dependencies]
+downloads = [
+  "yt-dlp",
+  "gallery-dl==1.32.12",
+]
 test = [
   "httpx==0.28.1",
   "pytest==9.1.1",

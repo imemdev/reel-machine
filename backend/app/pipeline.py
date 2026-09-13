@@ -7,6 +7,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import wave
 import traceback
 from datetime import datetime, timezone
@@ -37,11 +38,7 @@ MODEL_OPTIONS: dict[str, dict[str, str]] = {
         "description": "Tunisian Derja fine-tune for Arabic + French + English code-switching.",
         "source": "medyas/FarukSTT",
     },
-    "whisper_large_v3": {
-        "label": "Whisper Large-v3 (Full)",
-        "description": "OpenAI's full multilingual baseline; heavier, with no quantization fallback.",
-        "source": "ggml-large-v3.bin",
-    },
+
 }
 
 
@@ -61,15 +58,23 @@ class ModelSelection:
 
 
 def model_selection(settings: Settings, key: str) -> ModelSelection:
-    if key not in MODEL_OPTIONS:
-        raise PipelineError("unknown_model", "Choose FarukSTT or Whisper Large-v3 (Full).")
-    if key == "farukstt":
-        return ModelSelection(key, MODEL_OPTIONS[key]["label"], settings.farukstt_model)
-    return ModelSelection(
-        key,
-        MODEL_OPTIONS[key]["label"],
-        str(settings.whisper_large_v3_model or "ggml-large-v3.bin"),
-    )
+    if key != "farukstt":
+        raise PipelineError("unknown_model", "Only FarukSTT is supported for this Tunisian Arabic workspace.")
+    return ModelSelection(key, MODEL_OPTIONS[key]["label"], settings.farukstt_model)
+
+
+def _local_faruk_ready(source: str) -> bool:
+    directory = Path(source).expanduser()
+    if not all((directory / name).is_file() for name in ("config.json", "preprocessor_config.json", "tokenizer_config.json")):
+        return False
+    if (directory / "model.safetensors").is_file():
+        return True
+    try:
+        index = json.loads((directory / "model.safetensors.index.json").read_text())
+        shards = set(index["weight_map"].values())
+        return bool(shards) and all((directory / shard).is_file() for shard in shards)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def model_catalog(settings: Settings) -> list[dict[str, Any]]:
@@ -77,30 +82,20 @@ def model_catalog(settings: Settings) -> list[dict[str, Any]]:
         importlib.util.find_spec("transformers") is not None
         and importlib.util.find_spec("torch") is not None
     )
-    full_path = settings.whisper_large_v3_model
+    faruk_ready = faruk_dependencies and _local_faruk_ready(settings.farukstt_model)
     return [
         {
             "key": "farukstt",
             **MODEL_OPTIONS["farukstt"],
             "source": settings.farukstt_model,
-            "available": faruk_dependencies,
+            "available": faruk_ready,
             "availability_note": (
-                "Local Transformers runtime detected."
-                if faruk_dependencies
-                else "Install the optional FarukSTT runtime before using this model on real media."
+                "Local Transformers runtime and model files found."
+                if faruk_ready
+                else "Install the FarukSTT runtime and set FARUKSTT_MODEL to a complete local model directory."
             ),
         },
-        {
-            "key": "whisper_large_v3",
-            **MODEL_OPTIONS["whisper_large_v3"],
-            "source": str(full_path or "not configured"),
-            "available": bool(full_path and full_path.is_file()),
-            "availability_note": (
-                "Full ggml-large-v3 model found."
-                if full_path and full_path.is_file()
-                else "Set WHISPER_LARGE_V3_MODEL to an unquantized ggml-large-v3.bin file."
-            ),
-        },
+
     ]
 
 
@@ -201,6 +196,8 @@ def _extract_error_code(log_path: Path) -> tuple[str, str] | None:
 
 def yta_command(*, yta_function: str, source_url: str, output: Path) -> list[str]:
     """Build the login-shell invocation that preserves the owner's working yta path."""
+    if os.environ.get("KITE_DESKTOP_TOKEN"):
+        return [_command_path(yta_function), source_url, "--output", str(output)]
     return [
         "zsh",
         "-lic",
@@ -221,8 +218,8 @@ def gallery_dl_command(*, gallery_dl: str, source_url: str, directory: Path, dum
         executable = _command_path(parts[0])
         prefix = [executable, *parts[1:]]
     except PipelineError:
-        if parts == ["gallery-dl"] and shutil.which("uvx"):
-            prefix = [_command_path("uvx"), "gallery-dl"]
+        if parts == ["gallery-dl"] and importlib.util.find_spec("gallery_dl") is not None:
+            prefix = [sys.executable, "-m", "gallery_dl"]
         else:
             raise
     command = [*prefix, "--config-ignore", "--no-colors"]
@@ -234,8 +231,10 @@ def gallery_dl_command(*, gallery_dl: str, source_url: str, directory: Path, dum
 
 
 def tiktok_audio_command(*, source_url: str, directory: Path) -> list[str]:
+    if importlib.util.find_spec("gallery_dl") is None:
+        raise PipelineError("tool_missing", "Install the approved downloads extra before processing TikTok videos.")
     return [
-        _command_path("uvx"), "--from", "gallery-dl==1.32.12", "python",
+        sys.executable,
         str(Path(__file__).with_name("tiktok_audio.py")),
         "--config-ignore", "--no-colors", "--directory", str(directory),
         "--no-mtime", "--no-part", source_url,
@@ -485,51 +484,6 @@ class PipelineRunner:
             raise PipelineError("farukstt_no_timestamps", "FarukSTT returned no usable timestamped segments.")
         return segments
 
-    def _transcribe_whisper(self, audio_path: Path, raw_path: Path, run_dir: Path) -> list[Segment]:
-        model = self.settings.whisper_large_v3_model
-        if not model or not model.is_file():
-            raise PipelineError(
-                "whisper_large_v3_not_configured",
-                "Whisper Large-v3 (Full) is not configured. Set WHISPER_LARGE_V3_MODEL to ggml-large-v3.bin and retry.",
-            )
-        prefix = run_dir / "transcript.raw"
-        command = [
-            _command_path(self.settings.whisper_cli),
-            "-m",
-            str(model),
-            "-f",
-            str(audio_path),
-            "-l",
-            "ar",
-            "-t",
-            "6",
-            "-bo",
-            "5",
-            "-bs",
-            "5",
-            "-tpi",
-            "0.0",
-            "-np",
-            "-otxt",
-            "-osrt",
-            "-ovtt",
-            "-ojf",
-            "-of",
-            str(prefix),
-        ]
-        if self.settings.prompt_file and self.settings.prompt_file.is_file():
-            command.extend(["--prompt", self.settings.prompt_file.read_text(encoding="utf-8").strip(), "--carry-initial-prompt"])
-        _run_logged(command, run_dir / "whisper.log", timeout=self.settings.process_timeout_seconds)
-        raw_json = Path(f"{prefix}.json")
-        if not raw_json.is_file():
-            raise PipelineError("whisper_output_missing", "Whisper completed without a JSON transcript.")
-        raw_path.write_text(raw_json.read_text(encoding="utf-8"), encoding="utf-8")
-        try:
-            segments = parse_whisper_json(raw_json)
-        except (OSError, json.JSONDecodeError, ValueError) as error:
-            raise PipelineError("whisper_output_invalid", f"Whisper returned unusable timestamps: {error}") from error
-        return segments
-
     def _transcribe(self, video: dict[str, Any], run: dict[str, Any], audio: dict[str, Any]) -> dict[str, Any]:
         step_dir = self.artifacts.step_dir(video["id"], run["id"], "transcribe")
         raw_path = step_dir / "transcript.raw.json"
@@ -541,7 +495,7 @@ class PipelineRunner:
         elif run["model_key"] == "farukstt":
             segments = self._transcribe_farukstt(Path(audio["artifact_path"]), raw_path)
         else:
-            segments = self._transcribe_whisper(Path(audio["artifact_path"]), raw_path, step_dir)
+            raise PipelineError("unsupported_model", "Reprocess this video with FarukSTT.")
         normalized = step_dir / "segments.json"
         self.artifacts.write_json(normalized, {"segments": segments_to_json(segments), "model_key": run["model_key"]})
         manifest = step_dir / "manifest.json"

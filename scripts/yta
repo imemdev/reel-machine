@@ -1,0 +1,11 @@
+#!/bin/zsh
+# Project-local replacement for the old Mac's audio downloader function.
+set -eu
+project_root="${0:A:h:h}"
+exec "$project_root/.venv/bin/yt-dlp" \
+  --ignore-config --no-playlist \
+  --js-runtimes node \
+  --extractor-args 'youtube:player_client=web_embedded' \
+  --retries 10 --fragment-retries 10 \
+  --extract-audio --audio-format mp3 --audio-quality 0 \
+  --embed-metadata --embed-thumbnail "$@"

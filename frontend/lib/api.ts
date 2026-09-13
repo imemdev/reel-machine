@@ -56,6 +56,7 @@ export interface Video {
   thumbnail_url: string | null;
   duration_ms: number | null;
   stage: Stage;
+  paused: boolean;
   error_code: string | null;
   error_message: string | null;
   failed_step: string | null;
@@ -70,7 +71,7 @@ export interface Video {
 }
 
 export interface ModelOption {
-  key: "farukstt" | "whisper_large_v3";
+  key: "farukstt";
   label: "FarukSTT" | "Whisper Large-v3 (Full)" | string;
   description: string;
   source: string;
@@ -171,8 +172,16 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ? (payload as { detail?: unknown }).detail
       : payload;
     const errorDetail = typeof detail === "object" && detail !== null ? detail as Record<string, unknown> : {};
+    const validationMessage = Array.isArray(detail)
+      ? detail.map((issue: { loc?: unknown[]; msg?: string }) => {
+        const field = issue.loc?.filter((part) => part !== "body").join(".");
+        return issue.msg ? `${field ? `${field}: ` : ""}${issue.msg}` : "";
+      }).filter(Boolean).join("; ")
+      : "";
     const message = typeof errorDetail.message === "string"
       ? errorDetail.message
+      : validationMessage
+        ? validationMessage
       : typeof detail === "string"
         ? detail
         : `Request failed (${response.status}).`;
@@ -187,7 +196,23 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload as T;
 }
 
+export interface Note {
+  id: string;
+  title: string;
+  description: string;
+  script: string;
+  done: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type NoteDraft = Pick<Note, "title" | "description" | "script">;
+
 export const api = {
+  getNotes: () => request<{ items: Note[]; count: number }>("/api/notes"),
+  createNote: (payload: NoteDraft) => request<Note>("/api/notes", { method: "POST", body: JSON.stringify(payload) }),
+  updateNote: (id: string, payload: Partial<NoteDraft & { done: boolean }>) => request<Note>(`/api/notes/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteNote: (id: string) => request<void>(`/api/notes/${encodeURIComponent(id)}`, { method: "DELETE" }),
   getConfig: () => request<Config>("/api/config"),
   getDashboard: () => request<Dashboard>("/api/dashboard"),
   getVideos: (query = "") => request<{ items: Video[]; count: number }>(`/api/videos${query}`),
@@ -212,10 +237,13 @@ export const api = {
     method: "PATCH",
     body: JSON.stringify(payload),
   }),
+  pauseVideo: (id: string) => request<Video>(`/api/videos/${encodeURIComponent(id)}/pause`, { method: "POST" }),
+  resumeVideo: (id: string) => request<Video>(`/api/videos/${encodeURIComponent(id)}/resume`, { method: "POST" }),
+  deleteVideo: (id: string) => request<void>(`/api/videos/${encodeURIComponent(id)}`, { method: "DELETE" }),
   createJobs: (payload: {
     video_ids: string[];
     action: JobAction;
-    model_key: "farukstt" | "whisper_large_v3";
+    model_key: "farukstt";
     owner_asserted_tunisian: boolean;
   }) => request<{ action: JobAction; model_key: string; accepted: Run[]; rejected: { video_id: string; message: string }[] }>("/api/jobs", {
     method: "POST",
