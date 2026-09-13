@@ -42,6 +42,11 @@ class Settings:
     worker_poll_seconds: float
     max_batch_size: int
     process_timeout_seconds: int
+    worker_concurrency: int = 1
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.worker_concurrency <= 3:
+            raise ValueError("WORKER_CONCURRENCY must be between 1 and 3")
 
 
 def load_settings() -> Settings:
@@ -77,6 +82,7 @@ def load_settings() -> Settings:
         or "medyas/FarukSTT",
         prompt_file=Path(prompt_value).expanduser() if prompt_value else None,
         ledger_file=Path(ledger_value).expanduser() if ledger_value else None,
+        worker_concurrency=1,
         worker_poll_seconds=float(os.environ.get("WORKER_POLL_SECONDS", "0.5")),
         max_batch_size=int(os.environ.get("MAX_BATCH_SIZE", "12")),
         process_timeout_seconds=int(os.environ.get("PROCESS_TIMEOUT_SECONDS", "3600")),

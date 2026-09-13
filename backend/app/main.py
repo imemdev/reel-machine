@@ -85,6 +85,7 @@ def serialize_video(video: dict[str, Any], *, runs: list[dict[str, Any]] | None 
             if transcript
             else None
         ),
+        "estimate": video.get("estimate"),
         "job": (
             {
                 "id": job["id"],
@@ -171,6 +172,8 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
     def config() -> dict[str, Any]:
         return {
             "stages": list(STAGES),
+            "max_batch_size": settings.max_batch_size,
+            "worker_concurrency": settings.worker_concurrency,
             "models": model_catalog(settings),
             "suggested_tags": [
                 "Marketing",
@@ -211,6 +214,7 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
             identity = canonicalize_url(payload.url, allow_fixture=settings.allow_fixture_sources)
         except URLValidationError as error:
             raise _error(str(error), error.code, 422) from error
+        selection = model_selection(settings, "farukstt")
         video, duplicate = repository.create_video(
             platform=identity.platform,
             canonical_id=identity.canonical_id,
@@ -222,7 +226,9 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
             thumbnail_url=payload.thumbnail_url,
             duration_ms=payload.duration_ms,
             tags=_clean_tags(payload.tags),
+            processing_model=(selection.key, selection.label, selection.source),
         )
+        current.worker.wake()
         background_tasks.add_task(cache_thumbnail, repository, video["id"])
         return {"duplicate": duplicate, "video": serialize_video(video)}
 

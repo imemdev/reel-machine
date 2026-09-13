@@ -67,6 +67,7 @@ export interface Video {
   version: number;
   transcript: Transcript | null;
   job: Job | null;
+  estimate?: { status: string; sample_count: number; transcription_seconds: number | null; remaining_seconds: number | null; estimated_finish_at: string | null; queue_position: number | null; ahead_seconds: number | null } | null;
   runs?: Run[] | null;
 }
 

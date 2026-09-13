@@ -320,7 +320,7 @@ export default function LibraryApp() {
     setAddOpen(false);
     setActiveView("library");
     setSelectedIds([]);
-    showNotice(duplicate ? "This link was already in your library." : "Saved to Inbox. Process with FarukSTT whenever you are ready.", duplicate ? "info" : "success");
+    showNotice(duplicate ? "This link was already in your library." : "Added to the processing queue. One video runs at a time.", duplicate ? "info" : "success");
     void refresh();
   }, [mergeVideo, refresh, showNotice]);
 
@@ -532,7 +532,7 @@ function DashboardPage({
   const reducedMotion = useReducedMotion() ?? false;
   const metrics = [
     { label: "Inbox", value: counts.inbox, detail: "Ready for FarukSTT", icon: Stack, tone: "blue" },
-    { label: "Processing", value: counts.processing, detail: "Local jobs running", icon: Pulse, tone: "orange" },
+    { label: "Processing", value: counts.processing, detail: "Running and waiting jobs", icon: Pulse, tone: "orange" },
     { label: "Processed", value: counts.processed, detail: "Ready to review", icon: CheckCircle, tone: "green" },
     { label: "Complete", value: counts.complete, detail: "Transcript retained", icon: LockSimple, tone: "purple" },
   ] as const;
@@ -613,6 +613,26 @@ function DashboardPage({
   );
 }
 
+function EstimateLabel({ video, compact = false }: { video: Video; compact?: boolean }) {
+  const estimate = video.estimate;
+  if (!estimate) return null;
+  const minutes = (seconds: number) => `${Math.max(1, Math.ceil(seconds / 60))} min`;
+  let text = "Learning processing speed…";
+  if (estimate.status === "paused") text = "Paused · estimate resumes with processing";
+  else if (estimate.status === "unknown_duration") text = "Waiting for video duration to estimate";
+  else if (estimate.status === "overdue") text = "Taking longer than estimated";
+  else if (estimate.status === "finishing") text = "Transcription complete · finishing up";
+  else if (estimate.status === "estimating" && estimate.estimated_finish_at && estimate.remaining_seconds !== null) text = `About ${minutes(estimate.remaining_seconds)} left · transcription finishes around ${new Date(estimate.estimated_finish_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  else if (estimate.transcription_seconds !== null) text = `${estimate.status === "waiting" ? `Queue #${estimate.queue_position} · ` : "After preparation · "}~${minutes(estimate.transcription_seconds)} transcription${estimate.status === "waiting" && estimate.ahead_seconds !== null && estimate.ahead_seconds > 0 ? ` · ~${minutes(estimate.ahead_seconds)} of transcription ahead` : ""}`;
+  if (compact) {
+    if (estimate.status === "estimating" && estimate.remaining_seconds !== null) text = `~${minutes(estimate.remaining_seconds)} left`;
+    else if (estimate.status === "waiting" && estimate.transcription_seconds !== null) text = `Queue #${estimate.queue_position} · ~${minutes(estimate.transcription_seconds)}`;
+    else if (estimate.status === "learning") text = "Learning speed…";
+    else if (estimate.status === "paused") text = "Estimate paused";
+  }
+  return <small className="processing-estimate" title="Approximate, based on recent successful transcriptions. Downloading and preparation time are excluded.">{text}{!compact && estimate.sample_count > 0 && estimate.status !== "paused" ? ` · ${estimate.sample_count} sample${estimate.sample_count === 1 ? "" : "s"}` : ""}</small>;
+}
+
 function ProcessingCard({ video, onSelect }: { video: Video; onSelect: (id: string) => void }) {
   const progressIndex = Math.max(0, PIPELINE_STEPS.findIndex(([key]) => key === video.job?.current_step));
   return (
@@ -620,11 +640,11 @@ function ProcessingCard({ video, onSelect }: { video: Video; onSelect: (id: stri
       <Thumb video={video} size="medium" />
       <span className="processing-card-main">
         <strong>{video.title}</strong>
-        <span>{video.job ? `${actionLabel(video.job.action)} · ${video.job.model_label}` : "Queued"}</span>
+        <span>{video.job ? `${actionLabel(video.job.action)} · ${video.job.model_label}` : "Queued"}</span><EstimateLabel video={video} />
       </span>
       <span className="processing-card-progress">
-        <span className="progress-label">{video.paused ? "Paused" : stepLabel(video.job?.current_step ?? null)}</span>
-        <span className="progress-track"><span style={{ width: `${Math.max(10, ((progressIndex + 1) / PIPELINE_STEPS.length) * 100)}%` }} /></span>
+        <span className="progress-label">{video.paused ? "Paused" : video.job?.state === "queued" ? "Waiting for a slot" : stepLabel(video.job?.current_step ?? null)}</span>
+        <span className="progress-track"><span style={{ width: `${video.job?.state === "queued" ? 0 : Math.max(10, ((progressIndex + 1) / PIPELINE_STEPS.length) * 100)}%` }} /></span>
       </span>
       <CaretRight size={17} className="muted-icon" />
     </button>
@@ -709,6 +729,39 @@ function LibraryPage({
 }) {
   const [stageFilter, setStageFilter] = useState<Stage | "all">("all");
   const [activeTags, setActiveTags] = useState<string[]>([]);
+  const [controlBusy, setControlBusy] = useState(false);
+  const controlLock = useRef(false);
+  const selectedVideos = videos.filter((video) => selectedIds.includes(video.id));
+  const pausable = selectedVideos.filter((video) => video.stage === "processing" && !video.paused);
+  const resumable = selectedVideos.filter((video) => video.stage === "processing" && video.paused);
+  const controlVideos = async (targets: Video[], action: "pause" | "resume" | "delete") => {
+    if (controlLock.current || !targets.length) return;
+    if (action === "delete" && !window.confirm(`Permanently delete ${targets.length === 1 ? "this video" : `these ${targets.length} videos`}, all transcripts, media, and processing history? This cannot be undone.`)) return;
+    controlLock.current = true;
+    setControlBusy(true);
+    let succeeded = 0;
+    const failures: string[] = [];
+    try {
+      for (const video of targets) {
+        try {
+          if (action === "delete") {
+            await api.deleteVideo(video.id);
+            onDeleted(video.id);
+          } else {
+            onUpdated(await (action === "pause" ? api.pauseVideo(video.id) : api.resumeVideo(video.id)));
+          }
+          succeeded += 1;
+        } catch (error) {
+          failures.push(`${video.title}: ${errorMessage(error)}`);
+        }
+      }
+      onNotice(failures.length ? `${succeeded} updated. ${failures.join("; ")}` : action === "delete" ? "Selected videos deleted." : action === "pause" ? "Paused. Completed steps are kept for Resume." : "Added back to the processing queue.", failures.length ? "error" : "success");
+    } finally {
+      controlLock.current = false;
+      setControlBusy(false);
+    }
+  };
+
   const visibleVideos = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return videos.filter((video) => {
@@ -760,6 +813,9 @@ function LibraryPage({
             <span><CheckCircle size={16} weight="fill" /> {selectedIds.length} selected</span>
             <div>
               {selectedBatchAction ? <button className="button button-primary button-small" onClick={() => onOpenModel(selectedIds, selectedBatchAction)}>{actionLabel(selectedBatchAction)} with FarukSTT <ArrowRight size={14} /></button> : null}
+              {pausable.length ? <button className="button button-secondary button-small" disabled={controlBusy} onClick={() => void controlVideos(pausable, "pause")}><Pause size={15} /> Pause{pausable.length > 1 ? ` (${pausable.length})` : ""}</button> : null}
+              {resumable.length ? <button className="button button-secondary button-small" disabled={controlBusy} onClick={() => void controlVideos(resumable, "resume")}><Play size={15} /> Resume{resumable.length > 1 ? ` (${resumable.length})` : ""}</button> : null}
+              <button className="button button-secondary button-small delete-control" disabled={controlBusy} onClick={() => void controlVideos(selectedVideos, "delete")}><Trash size={15} /> {controlBusy ? "Updating…" : "Delete"}</button>
               {bulkStageAction ? <button className="button button-secondary button-small" onClick={() => selectedIds.forEach((id) => onStageAction(id, bulkStageAction))}>{bulkStageAction === "done" ? "Mark Done" : "Move to Processed"}</button> : null}
             </div>
           </div>
@@ -769,7 +825,7 @@ function LibraryPage({
           <div className="library-table" role="table" aria-label="Saved videos">
             <div className="table-head" role="row">
               <span className="check-cell"><input name="select-all-visible" type="checkbox" checked={allSelected} onChange={() => onToggleAll(allSelected ? [] : visibleVideos.map((video) => video.id))} aria-label="Select all visible videos" /></span>
-              <span>Source</span><span>Stage</span><span>Tags</span><span>Saved</span><span />
+              <span>Source</span><span>Stage</span><span>Tags</span><span>Saved</span><span>Actions</span>
             </div>
             <AnimatePresence initial={false}>
               {visibleVideos.map((video) => (
@@ -778,7 +834,8 @@ function LibraryPage({
                   video={video}
                   selected={selectedIds.includes(video.id)}
                   isOpen={selectedVideoId === video.id}
-                  actionBusy={actionBusy === video.id}
+                  actionBusy={controlBusy || actionBusy === video.id}
+                  onControl={(action) => void controlVideos([video], action)}
                   onSelect={onSelect}
                   onToggleSelected={onToggleSelected}
                   onOpenModel={onOpenModel}
@@ -821,7 +878,9 @@ function VideoRow({
   onToggleSelected,
   onOpenModel,
   onStageAction,
+  onControl,
 }: {
+  onControl: (action: "pause" | "resume" | "delete") => void;
   video: Video;
   selected: boolean;
   isOpen: boolean;
@@ -841,24 +900,26 @@ function VideoRow({
       exit={{ opacity: 0, y: -4 }}
       transition={{ duration: 0.18 }}
       onClick={() => onSelect(video.id)}
-      onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onSelect(video.id); }}
+      onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onSelect(video.id); } }}
       tabIndex={0}
     >
       <span className="check-cell" onClick={(event) => event.stopPropagation()}><input name={`select-${video.id}`} type="checkbox" checked={selected} onChange={() => onToggleSelected(video.id)} aria-label={`Select ${video.title}`} /></span>
       <span className="source-cell"><Thumb video={video} size="small" /><span className="source-copy"><strong>{video.title}</strong><span>{platformLabel(video.platform)} · {video.creator}</span></span></span>
-      <span><StageBadge stage={video.stage} paused={video.paused} /></span>
+      <span><StageBadge stage={video.stage} paused={video.paused} queued={video.job?.state === "queued"} /><EstimateLabel video={video} compact /></span>
       <span className="row-tags">{video.tags.length ? video.tags.slice(0, 2).map((tag) => <span className="tag-chip" key={tag}>{tag}</span>) : <span className="muted-text">No tags</span>}{video.tags.length > 2 ? <span className="tag-overflow">+{video.tags.length - 2}</span> : null}</span>
       <span className="saved-cell">{formatDate(video.saved_at, false)}<small>{formatDuration(video.duration_ms)}</small></span>
       <span className="row-action" onClick={(event) => event.stopPropagation()}>
-        {action ? <button className="row-cta" disabled={actionBusy} onClick={() => onOpenModel([video.id], action)}>{actionBusy ? <CircleNotch size={15} className="spin" /> : action === "reprocess" ? <ArrowClockwise size={15} /> : <Play size={15} weight="fill" />}<span>{actionLabel(action)}</span></button> : video.stage === "done" ? <button className="row-cta quiet-cta" onClick={() => onStageAction(video.id, "complete")}><LockSimple size={15} /> Complete</button> : <DotsThree size={20} className="muted-icon" />}
+        {video.stage === "processing" ? <button type="button" className="row-icon-control" disabled={actionBusy} title={video.paused ? "Resume video" : "Pause video"} aria-label={video.paused ? "Resume video" : "Pause video"} onClick={() => onControl(video.paused ? "resume" : "pause")}>{video.paused ? <Play size={17} /> : <Pause size={17} />}</button> : null}
+        {action ? <button type="button" className="row-icon-control" disabled={actionBusy} title={actionLabel(action)} aria-label={actionLabel(action)} onClick={() => onOpenModel([video.id], action)}>{actionBusy ? <CircleNotch size={17} className="spin" /> : action === "reprocess" ? <ArrowClockwise size={17} /> : <Play size={17} />}</button> : video.stage === "done" ? <button type="button" className="row-icon-control" disabled={actionBusy} title="Complete video" aria-label="Complete video" onClick={() => onStageAction(video.id, "complete")}><LockSimple size={17} /></button> : null}
+        <button type="button" className="row-icon-control delete-control" disabled={actionBusy} title={video.stage === "processing" && !video.paused ? "Stop and delete video" : "Delete video"} aria-label={video.stage === "processing" && !video.paused ? "Stop and delete video" : "Delete video"} onClick={() => onControl("delete")}><Trash size={17} /></button>
       </span>
     </motion.div>
   );
 }
 
-function StageBadge({ stage, paused = false }: { stage: Stage; paused?: boolean }) {
-  const icon = paused ? <Pause size={13} /> : stage === "processing" ? <CircleNotch size={13} className="spin" /> : stage === "processed" || stage === "done" ? <CheckCircle size={13} weight="fill" /> : stage === "complete" ? <LockSimple size={13} weight="fill" /> : stage === "error" ? <WarningCircle size={13} weight="fill" /> : <Clock size={13} />;
-  return <span className={`stage-badge stage-${stage}`}>{icon}{paused ? "Paused" : stageLabel(stage)}</span>;
+function StageBadge({ stage, paused = false, queued = false }: { stage: Stage; paused?: boolean; queued?: boolean }) {
+  const icon = paused ? <Pause size={13} /> : queued ? <Clock size={13} /> : stage === "processing" ? <CircleNotch size={13} className="spin" /> : stage === "processed" || stage === "done" ? <CheckCircle size={13} weight="fill" /> : stage === "complete" ? <LockSimple size={13} weight="fill" /> : stage === "error" ? <WarningCircle size={13} weight="fill" /> : <Clock size={13} />;
+  return <span className={`stage-badge stage-${stage}`}>{icon}{paused ? "Paused" : queued ? "Waiting" : stageLabel(stage)}</span>;
 }
 
 function Thumb({ video, size }: { video: Video; size: "small" | "medium" }) {
@@ -1019,7 +1080,7 @@ function VideoDetail({
   return (
     <div className="detail-panel">
       <div className="detail-topline"><button className="back-button" onClick={onBack}><ArrowLeft size={16} /> <span>Library</span></button><span className="detail-id">{video.canonical_id}</span></div>
-      <div className="detail-source-head"><Thumb video={video} size="medium" /><div className="detail-source-copy"><div className="detail-platform">{platformLabel(video.platform)} <span>·</span> {formatDuration(video.duration_ms)}</div><h2>{video.title}</h2><span>{video.creator}</span></div><StageBadge stage={video.stage} paused={video.paused} /></div>
+      <div className="detail-source-head"><Thumb video={video} size="medium" /><div className="detail-source-copy"><div className="detail-platform">{platformLabel(video.platform)} <span>·</span> {formatDuration(video.duration_ms)}</div><h2>{video.title}</h2><span>{video.creator}</span></div><StageBadge stage={video.stage} paused={video.paused} queued={video.job?.state === "queued"} /></div>
 
       <div className="detail-section">
         <div className="modal-actions">
@@ -1049,7 +1110,7 @@ function VideoDetail({
 
       <section className="detail-section history-section">
         <div className="detail-section-heading"><div><span className="section-eyebrow">Pipeline</span><h3>Processing history</h3></div>{nextAction ? <button className="button button-primary button-small" onClick={() => onOpenModel(nextAction)}><Play size={14} weight="fill" /> {actionLabel(nextAction)}</button> : null}</div>
-        {video.job?.state === "running" || video.job?.state === "queued" ? <div className="job-status">{video.paused ? <Pause size={16} /> : <CircleNotch size={16} className="spin" />}<span><strong>{video.paused ? "Paused — ready to resume" : `${actionLabel(video.job.action)} in progress`}</strong><small>{stepLabel(video.job.current_step)} · {video.job.model_label}</small></span></div> : null}
+        {video.job?.state === "running" || video.job?.state === "queued" ? <div className="job-status">{video.paused ? <Pause size={16} /> : <CircleNotch size={16} className="spin" />}<span><strong>{video.paused ? "Paused — ready to resume" : `${actionLabel(video.job.action)} in progress`}</strong><small>{stepLabel(video.job.current_step)} · {video.job.model_label}</small><EstimateLabel video={video} /></span></div> : null}
         <PipelineTimeline video={video} />
         {video.job ? <a className="export-link" href={`${API_BASE}/api/jobs/${encodeURIComponent(video.job.id)}/logs`} target="_blank" rel="noreferrer">View debug logs · current run</a> : null}
         {video.runs?.filter((run) => run.id !== video.job?.id).map((run) => <p key={`logs-${run.id}`}><a className="export-link" href={`${API_BASE}/api/jobs/${encodeURIComponent(run.id)}/logs`} target="_blank" rel="noreferrer">Debug logs · {run.model_label} · {formatDate(run.started_at)} · {run.id.slice(-6)}</a></p>)}
@@ -1195,7 +1256,7 @@ function AddVideoDialog({
       {preview ? <div className="preview-block"><div className="preview-heading"><span className={`preview-status preview-${preview.status}`}>{preview.status === "ready" ? <CheckCircle size={14} weight="fill" /> : <WarningCircle size={14} weight="fill" />} {preview.status === "ready" ? "Metadata found" : preview.status === "private" ? "Private source" : "Metadata unknown"}</span><span>{platformLabel(preview.platform)} · {formatDuration(preview.duration_ms)}</span></div><div className="preview-content"><div className={`preview-thumb platform-${preview.platform}`}>{preview.thumbnail_url ? <img src={preview.thumbnail_url} alt="" /> : <Waveform size={23} weight="duotone" />}</div><div className="preview-copy"><strong>{preview.title || "Untitled video"}</strong><span>{preview.creator || "Creator unknown"}</span><small>{preview.message}</small></div></div><div className="preview-source"><span title={preview.canonical_url}>{preview.canonical_url}</span><span>{preview.metadata_source || "No metadata adapter result"}</span></div></div> : null}
       {preview ? <>
         <div className="tag-editor"><div className="field-label"><span>Tags <small>optional</small></span><div className="tag-input-wrap"><Tag size={15} /><input name="video-tag" value={tagInput} onChange={(event) => setTagInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addTag(); } }} placeholder="Add a tag" />{tagInput ? <button type="button" onClick={() => addTag()}><Plus size={14} /></button> : null}</div></div><div className="tag-suggestions">{suggestedTags.filter((tag) => !tags.includes(tag)).slice(0, 5).map((tag) => <button type="button" key={tag} onClick={() => addTag(tag)}>{tag}</button>)}{tags.map((tag) => <button type="button" className="tag-chip selected-chip" key={tag} onClick={() => setTags((current) => current.filter((item) => item !== tag))}>{tag} <X size={11} /></button>)}</div></div>
-        <div className="modal-footer"><span className="modal-footnote"><ShieldCheck size={15} /> Saved locally first · no processing starts here</span><div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancel</button><button type="button" className="button button-primary" disabled={saveBusy} onClick={() => void save()}>{saveBusy ? <CircleNotch size={16} className="spin" /> : <Stack size={16} />} {saveBusy ? "Saving" : "Save to Inbox"}</button></div></div>
+        <div className="modal-footer"><span className="modal-footnote"><ShieldCheck size={15} /> Processes automatically · one at a time</span><div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancel</button><button type="button" className="button button-primary" disabled={saveBusy} onClick={() => void save()}>{saveBusy ? <CircleNotch size={16} className="spin" /> : <Stack size={16} />} {saveBusy ? "Saving" : "Add video"}</button></div></div>
       </> : null}
     </motion.div>
   </motion.div>;

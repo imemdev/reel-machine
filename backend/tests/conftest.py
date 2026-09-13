@@ -17,5 +17,6 @@ def runtime(tmp_path) -> Runtime:
         artifact_root=tmp_path / "runs",
         allow_fixture_sources=True,
         worker_poll_seconds=0.01,
+        worker_concurrency=1,
     )
     return build_runtime(settings)

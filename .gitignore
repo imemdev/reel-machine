@@ -30,3 +30,5 @@ frontend/.next-desktop/
 frontend/out/
 desktop/python-alternative/
 desktop/Kite.iconset/
+
+desktop/backups/

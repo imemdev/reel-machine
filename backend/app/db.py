@@ -173,6 +173,16 @@ class Repository:
                 CREATE INDEX IF NOT EXISTS activities_created_idx ON activities(created_at DESC);
                 """
             )
+            connection.executescript("""
+                CREATE TABLE IF NOT EXISTS step_clocks (
+                    run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+                    started_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS transcription_timings (
+                    run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+                    seconds REAL NOT NULL, duration_ms INTEGER NOT NULL
+                );
+            """)
             columns = {row[1] for row in connection.execute("PRAGMA table_info(videos)")}
             if "paused" not in columns:
                 connection.execute("ALTER TABLE videos ADD COLUMN paused INTEGER NOT NULL DEFAULT 0")
@@ -243,6 +253,8 @@ class Repository:
                 payload["transcript"] = None
             run = self._run_row(connection, row["active_run_id"])
             payload["job"] = dict(run) if run else None
+            from .estimates import queue_estimates
+            payload["estimate"] = queue_estimates(connection).get(video_id) if row["stage"] == "processing" else None
         return payload
 
     def list_videos(
@@ -316,6 +328,7 @@ class Repository:
         thumbnail_url: str | None,
         duration_ms: int | None = None,
         tags: list[str] | None = None,
+        processing_model: tuple[str, str, str] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         video_id = new_id("video")
         created = now()
@@ -357,7 +370,11 @@ class Repository:
                 ),
             )
             self._replace_tags(connection, video_id, normalized_tags)
-            self._activity(connection, video_id=video_id, kind="saved", message="Saved to Inbox")
+            self._activity(connection, video_id=video_id, kind="saved", message="Saved video" if processing_model else "Saved to Inbox")
+            if processing_model:
+                key, label, source = processing_model
+                self._create_run(connection, video_id, action="process", model_key=key,
+                                 model_label=label, model_source=source, owner_asserted=True)
             connection.commit()
         return self.hydrate_video(video_id), False
 
@@ -422,58 +439,67 @@ class Repository:
         model_source: str,
         owner_asserted: bool,
     ) -> dict[str, Any]:
+        with self.connection() as connection:
+            self.begin(connection)
+            run = self._create_run(connection, video_id, action=action, model_key=model_key,
+                                   model_label=model_label, model_source=model_source, owner_asserted=owner_asserted)
+            connection.commit()
+        return run
+
+    def _create_run(
+        self, connection: sqlite3.Connection, video_id: str, *, action: str,
+        model_key: str, model_label: str, model_source: str, owner_asserted: bool,
+    ) -> dict[str, Any]:
+        """Queue within the caller's transaction, including atomic save-and-queue."""
         if action not in {"process", "retry", "reprocess"}:
             raise ConflictError("Unsupported processing action")
         run_id = new_id("run")
-        with self.connection() as connection:
-            self.begin(connection)
-            video = self._video_row(connection, video_id)
-            allowed = {
-                "process": {"inbox"},
-                "retry": {"error"},
-                "reprocess": {"processed"},
-            }[action]
-            if video["stage"] not in allowed:
-                raise ConflictError(f"Cannot {action} a video in {video['stage']} stage")
-            if action == "retry" and video["active_run_id"]:
-                previous = connection.execute(
-                    "SELECT failed_step, error_code FROM runs WHERE id = ?", (video["active_run_id"],)
-                ).fetchone()
-                failed_step = previous["failed_step"] if previous else None
-                if previous and previous["error_code"] == "audio_stream_missing":
-                    failed_step = "download"
-                if failed_step in STAGE_ORDER:
-                    start = STAGE_ORDER.index(failed_step)
-                    connection.execute(
-                        f"DELETE FROM checkpoints WHERE video_id = ? AND step IN ({','.join('?' for _ in STAGE_ORDER[start:])})",
-                        [video_id, *STAGE_ORDER[start:]],
-                    )
-            if action == "reprocess":
-                start = STAGE_ORDER.index("transcribe")
+        video = self._video_row(connection, video_id)
+        allowed = {
+            "process": {"inbox"},
+            "retry": {"error"},
+            "reprocess": {"processed"},
+        }[action]
+        if video["stage"] not in allowed:
+            raise ConflictError(f"Cannot {action} a video in {video['stage']} stage")
+        if action == "retry" and video["active_run_id"]:
+            previous = connection.execute(
+                "SELECT failed_step, error_code FROM runs WHERE id = ?", (video["active_run_id"],)
+            ).fetchone()
+            failed_step = previous["failed_step"] if previous else None
+            if previous and previous["error_code"] == "audio_stream_missing":
+                failed_step = "download"
+            if failed_step in STAGE_ORDER:
+                start = STAGE_ORDER.index(failed_step)
                 connection.execute(
                     f"DELETE FROM checkpoints WHERE video_id = ? AND step IN ({','.join('?' for _ in STAGE_ORDER[start:])})",
                     [video_id, *STAGE_ORDER[start:]],
                 )
+        if action == "reprocess":
+            start = STAGE_ORDER.index("transcribe")
             connection.execute(
-                """
-                INSERT INTO runs(
-                    id, video_id, action, model_key, model_label, model_source,
-                    owner_asserted, state, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)
-                """,
-                (run_id, video_id, action, model_key, model_label, model_source, int(owner_asserted), now()),
+                f"DELETE FROM checkpoints WHERE video_id = ? AND step IN ({','.join('?' for _ in STAGE_ORDER[start:])})",
+                [video_id, *STAGE_ORDER[start:]],
             )
-            connection.execute(
-                """
-                UPDATE videos SET stage = 'processing', active_run_id = ?,
-                    error_code = NULL, error_message = NULL, failed_step = NULL,
-                    updated_at = ?, version = version + 1 WHERE id = ?
-                """,
-                (run_id, now(), video_id),
-            )
-            message = {"process": "Queued for processing", "retry": "Retry queued", "reprocess": "Reprocess queued"}[action]
-            self._activity(connection, video_id=video_id, kind="processing", message=f"{message} with {model_label}")
-            connection.commit()
+        connection.execute(
+            """
+            INSERT INTO runs(
+                id, video_id, action, model_key, model_label, model_source,
+                owner_asserted, state, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)
+            """,
+            (run_id, video_id, action, model_key, model_label, model_source, int(owner_asserted), now()),
+        )
+        connection.execute(
+            """
+            UPDATE videos SET stage = 'processing', active_run_id = ?,
+                error_code = NULL, error_message = NULL, failed_step = NULL,
+                updated_at = ?, version = version + 1 WHERE id = ?
+            """,
+            (run_id, now(), video_id),
+        )
+        message = {"process": "Queued for processing", "retry": "Retry queued", "reprocess": "Reprocess queued"}[action]
+        self._activity(connection, video_id=video_id, kind="processing", message=f"{message} with {model_label}")
         return {"id": run_id, "video_id": video_id, "action": action, "model_key": model_key, "state": "queued"}
 
     def claim_run(self, run_id: str) -> dict[str, Any]:
@@ -510,6 +536,17 @@ class Repository:
     def set_run_step(self, run_id: str, step: str) -> None:
         with self.connection() as connection:
             connection.execute("UPDATE runs SET current_step = ?, updated_at = ? WHERE id = ?", (step, now(), run_id))
+            connection.execute("INSERT OR REPLACE INTO step_clocks VALUES (?, ?)", (run_id, datetime.now(timezone.utc).isoformat()))
+            connection.commit()
+
+    def record_transcription_time(self, run_id: str, seconds: float, duration_ms: int) -> None:
+        with self.connection() as connection:
+            connection.execute("INSERT OR REPLACE INTO transcription_timings VALUES (?, ?, ?)", (run_id, seconds, duration_ms))
+            connection.commit()
+
+    def set_audio_duration(self, video_id: str, duration_ms: int) -> None:
+        with self.connection() as connection:
+            connection.execute("UPDATE videos SET duration_ms=? WHERE id=?", (duration_ms, video_id))
             connection.commit()
 
     def checkpoint(self, video_id: str, step: str) -> dict[str, Any] | None:

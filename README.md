@@ -71,7 +71,7 @@ npm --prefix frontend run typecheck
 npm --prefix frontend run build
 ```
 
-A single local supervisor runs each job in its own process group. Successful steps are checkpointed; retry/reprocess uses valid artifacts where possible, and `Done → Complete` removes source media while retaining transcript revisions and generated text artifacts.
+A single local supervisor runs each job in its own process group, with configurable parallelism. Successful steps are checkpointed; retry/reprocess uses valid artifacts where possible, and `Done → Complete` removes source media while retaining transcript revisions and generated text artifacts.
 
 ## Pause, resume, and delete
 
@@ -94,3 +94,37 @@ running a second independent worker against the same database.
 ## Mac application
 
 The Electron desktop build is installed as `/Applications/Kite.app`. It starts its bundled backend automatically and uses a migrated library at `~/Library/Application Support/Kite/library`. The project data remains a separate backup. See [desktop packaging and usage](desktop/README.md) for lifecycle behavior, model location, logs, and rebuild instructions.
+
+## Automatic processing queue and estimates
+
+Adding a video saves it and queues FarukSTT automatically in one SQLite transaction.
+The app runs **one video at a time** to reduce CPU/GPU and memory pressure. Additional
+videos wait in FIFO order. Failed videos move to Error and leave the runnable queue;
+the next waiting video starts automatically. Failed jobs require an explicit Retry
+and never retry endlessly. Duplicate imports do not create another job.
+
+Pause/resume and delete are available on each library row, in the selection bar, and
+in video details. Pause retains completed checkpoints; restart preserves waiting and
+paused jobs. Delete confirms before stopping and removing the selected video.
+
+Transcription estimates learn from up to 20 recent successful real runs with the same
+model source: total transcription seconds divided by total audio duration. Durations
+are measured from prepared audio. Timing starts anew when an interrupted transcription
+restarts, excluding paused time. Failed, fixture, and reused transcription steps do not
+create new speed samples. Timing history is stored locally and removed with its video.
+Old runs without recorded timing are not guessed or treated as zero-duration samples.
+
+The running transcription shows approximate minutes remaining and finish time, updated
+by normal UI polling. Waiting videos show their queue position, expected transcription
+length, and transcription time ahead when known. Download/preparation time is excluded;
+unknown preparation or an overdue upstream run suppresses the queue wait prediction.
+No timing history shows “Learning processing speed”; missing duration shows a duration
+placeholder; overruns show “Taking longer than estimated.” Estimates are not promises.
+
+`MAX_BATCH_SIZE=12` limits each manual processing request, not the waiting queue length.
+The desktop and standard launcher always load a concurrency of 1; an old
+`WORKER_CONCURRENCY` environment value does not raise it. `/api/config` reports the
+actual limit. Use one supervisor per database.
+
+Rebuild the packaged Kite.app after source changes; an installed bundle does not
+read code or `.env` updates from the project checkout.

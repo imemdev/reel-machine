@@ -273,6 +273,10 @@ class PipelineRunner:
         result = checkpoint or action()
         self._event(video, run, step, "reused" if checkpoint else "succeeded",
                     duration_seconds=round(monotonic() - started, 3), artifact_path=result["artifact_path"])
+        if step == "transcribe" and not checkpoint and video["platform"] != "fixture":
+            duration = self.repository.hydrate_video(video["id"])["duration_ms"]
+            if duration and duration > 0:
+                self.repository.record_transcription_time(run["id"], monotonic() - started, duration)
         return result
 
     def _maybe_fail(self, step: str) -> None:
@@ -410,6 +414,9 @@ class PipelineRunner:
             _run_logged(command, destination.parent / "ffmpeg.log", timeout=self.settings.process_timeout_seconds)
         if not destination.is_file() or destination.stat().st_size == 0:
             raise PipelineError("audio_prepare_failed", "FFmpeg produced no usable audio.", retryable=True)
+        if video["platform"] != "fixture":
+            with wave.open(str(destination), "rb") as audio_file:
+                self.repository.set_audio_duration(video["id"], round(audio_file.getnframes() / audio_file.getframerate() * 1000))
         self.repository.set_media_paths(video["id"], media_path=Path(download["artifact_path"]), audio_path=destination)
         metadata = {"path": str(destination), "sample_rate": 16_000, "channels": 1}
         return self._save(video=video, run=run, step="prepare_audio", artifact=destination, metadata=metadata, input_fingerprint=_fingerprint(download["artifact_path"]))
