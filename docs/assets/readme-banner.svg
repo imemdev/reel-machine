@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Reel Machine — Your reels, ready to read.</title>
+  <desc id="desc">A dark blue banner with mint accents illustrating a video becoming an audio waveform and editable transcript. A local workspace for Tunisian Arabic video transcripts.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1200" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101C30"/>
+      <stop offset="1" stop-color="#172D43"/>
+    </linearGradient>
+    <linearGradient id="cover" x1="784" y1="109" x2="918" y2="317" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3F7680"/>
+      <stop offset="1" stop-color="#213B5A"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" stroke="#9ACBD5" stroke-opacity="0.07"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="420" rx="24" fill="url(#background)"/>
+  <path d="M664 0H1176C1189 0 1200 11 1200 24V396C1200 409 1189 420 1176 420H664V0Z" fill="url(#grid)"/>
+  <circle cx="980" cy="203" r="160" stroke="#99F1D0" stroke-opacity="0.1"/>
+  <circle cx="980" cy="203" r="128" stroke="#99F1D0" stroke-opacity="0.07"/>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <rect x="56" y="48" width="34" height="34" rx="10" fill="#A2F2D2"/>
+    <path d="M69 57L81 65L69 73V57Z" fill="#142D36"/>
+    <text x="104" y="71" fill="#EDF5FB" font-size="18" font-weight="700" letter-spacing="2">REEL MACHINE</text>
+
+    <text x="56" y="169" fill="#F4F8FC" font-size="62" font-weight="750" letter-spacing="-2.8">Your reels.</text>
+    <text x="56" y="238" fill="#A2F2D2" font-size="62" font-weight="750" letter-spacing="-2.8">Ready to read.</text>
+    <text x="59" y="281" fill="#ACBDCE" font-size="19">A local workspace for Tunisian Arabic video transcripts.</text>
+
+    <g font-size="13" font-weight="600" letter-spacing="0.4">
+      <rect x="58" y="329" width="108" height="32" rx="16" fill="#A2F2D2" fill-opacity="0.09" stroke="#A2F2D2" stroke-opacity="0.2"/>
+      <circle cx="75" cy="345" r="3" fill="#A2F2D2"/>
+      <text x="86" y="350" fill="#C6E9DE">Runs locally</text>
+      <rect x="177" y="329" width="131" height="32" rx="16" fill="#A2F2D2" fill-opacity="0.09" stroke="#A2F2D2" stroke-opacity="0.2"/>
+      <text x="194" y="350" fill="#C6E9DE">Editable drafts</text>
+      <rect x="319" y="329" width="135" height="32" rx="16" fill="#A2F2D2" fill-opacity="0.09" stroke="#A2F2D2" stroke-opacity="0.2"/>
+      <text x="336" y="350" fill="#C6E9DE">TXT · SRT · VTT</text>
+    </g>
+
+    <rect x="729" y="100" width="166" height="235" rx="20" fill="#091526" fill-opacity="0.5"/>
+    <rect x="718" y="88" width="166" height="235" rx="20" fill="#1B334A" stroke="#486378"/>
+    <rect x="730" y="100" width="142" height="211" rx="12" fill="url(#cover)"/>
+    <path d="M730 259C765 221 785 219 819 250C836 265 855 256 872 237V299C872 306 867 311 860 311H742C735 311 730 306 730 299V259Z" fill="#24495F"/>
+    <path d="M730 288C758 259 789 267 817 278C838 287 856 282 872 271V299C872 306 867 311 860 311H742C735 311 730 306 730 299V288Z" fill="#365B6B"/>
+    <circle cx="801" cy="187" r="28" fill="#F2FFF9" fill-opacity="0.13" stroke="#D8FFF0" stroke-opacity="0.5"/>
+    <path d="M794 175L813 187L794 199V175Z" fill="#D5FFEF"/>
+    <rect x="747" y="118" width="54" height="22" rx="7" fill="#0F273B" fill-opacity="0.75"/>
+    <text x="758" y="133" fill="#D4E9E8" font-size="10" font-weight="600" letter-spacing="1">VIDEO</text>
+
+    <rect x="855" y="173" width="286" height="180" rx="16" fill="#071422" fill-opacity="0.4"/>
+    <rect x="845" y="162" width="286" height="180" rx="16" fill="#21394E" stroke="#507180"/>
+    <text x="865" y="190" fill="#B5CDDB" font-size="11" font-weight="700" letter-spacing="1.6">TRANSCRIPT</text>
+    <rect x="1046" y="177" width="65" height="20" rx="10" fill="#A2F2D2" fill-opacity="0.12"/>
+    <text x="1059" y="191" fill="#A2F2D2" font-size="10" font-weight="600">EDITABLE</text>
+
+    <g stroke="#A2F2D2" stroke-width="3" stroke-linecap="round">
+      <path d="M867 220V228M875 216V232M883 219V229M891 211V237M899 207V241M907 215V233M915 203V245M923 210V238M931 216V232M939 208V240M947 201V247M955 212V236M963 217V231M971 212V236M979 205V243M987 213V235M995 218V230M1003 214V234M1011 220V228M1019 215V233M1027 209V239M1035 216V232M1043 221V227M1051 217V231M1059 212V236M1067 218V230M1075 216V232M1083 220V228M1091 218V230M1099 222V226"/>
+    </g>
+    <path d="M865 266H1111" stroke="#718997" stroke-opacity="0.35"/>
+    <text x="865" y="290" fill="#9DB8C9" font-size="10" font-family="'SFMono-Regular', Consolas, monospace">00:00</text>
+    <rect x="910" y="282" width="173" height="6" rx="3" fill="#D6E7EF" fill-opacity="0.8"/>
+    <text x="865" y="315" fill="#9DB8C9" font-size="10" font-family="'SFMono-Regular', Consolas, monospace">00:12</text>
+    <rect x="910" y="307" width="134" height="6" rx="3" fill="#D6E7EF" fill-opacity="0.45"/>
+
+    <circle cx="1107" cy="93" r="16" fill="#A2F2D2"/>
+    <path d="M1100 93L1105 98L1114 88" stroke="#163D3F" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M916 120H959M950 111L959 120L950 129" stroke="#81B8BD" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
