@@ -3,13 +3,13 @@ from __future__ import annotations
 import threading
 import json
 import os
-import signal
 import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
 
 from .db import Repository, NotFoundError, STAGE_ORDER
+from . import procs
 from .pipeline import PipelineRunner
 from .settings import Settings, load_settings
 from .storage import ArtifactStore
@@ -76,7 +76,7 @@ class LocalWorker:
                 continue
             _, process = entry
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                procs.terminate_tree(process.pid)
             except ProcessLookupError:
                 pass
             except PermissionError as error:
@@ -91,7 +91,7 @@ class LocalWorker:
                 pass
             # Kill descendants too, including downloaders that outlive their parent.
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                procs.kill_tree(process.pid)
             except ProcessLookupError:
                 pass
             except PermissionError as error:
@@ -169,9 +169,9 @@ class LocalWorker:
                 if row["state"] == "running":
                     self._discard_partial_step(self.runtime.repository.hydrate_video(row["video_id"]))
                 log = self.runtime.artifacts.run_dir(row["video_id"], row["id"]) / "worker.log"
-                with log.open("a") as output:
+                with log.open("a", encoding="utf-8") as output:
                     process = subprocess.Popen(self._job_command(row["id"]), cwd=self.runtime.settings.project_root,
-                                               env=env, stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+                                               env=env, stdout=output, stderr=subprocess.STDOUT, **procs.new_group_kwargs())
             except OSError as error:
                 self.runtime.repository.mark_error(run_id=row["id"], step="inspect",
                     code="worker_start_failed", message=f"Could not start worker: {error}", retryable=True)

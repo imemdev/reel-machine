@@ -3,11 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
 import threading
 import time
 from pathlib import Path
 
+from . import procs
 from .runtime import build_runtime
 from .settings import Settings
 
@@ -31,8 +31,14 @@ def main() -> int:
         if parent:
             def watch_parent() -> None:
                 while True:
-                    if os.getppid() != parent:
-                        os.killpg(os.getpgrp(), signal.SIGKILL)
+                    if procs.IS_WINDOWS:
+                        # Windows never reparents, and venv launchers sit between
+                        # supervisor and job, so check that the supervisor lives.
+                        orphaned = not procs.process_alive(parent)
+                    else:
+                        orphaned = os.getppid() != parent
+                    if orphaned:
+                        procs.kill_own_tree()
                     time.sleep(0.2)
             threading.Thread(target=watch_parent, daemon=True).start()
         runtime.runner.run(args.run_id)

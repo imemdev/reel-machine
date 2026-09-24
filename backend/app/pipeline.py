@@ -17,6 +17,7 @@ from hashlib import sha256 as digest_sha256
 from pathlib import Path
 from typing import Any
 
+from . import procs
 from .db import STAGE_ORDER, Repository
 from .settings import Settings
 from .storage import ArtifactStore, sha256
@@ -70,7 +71,7 @@ def _local_faruk_ready(source: str) -> bool:
     if (directory / "model.safetensors").is_file():
         return True
     try:
-        index = json.loads((directory / "model.safetensors.index.json").read_text())
+        index = json.loads((directory / "model.safetensors.index.json").read_text(encoding="utf-8"))
         shards = set(index["weight_map"].values())
         return bool(shards) and all((directory / shard).is_file() for shard in shards)
     except (OSError, ValueError, KeyError, TypeError):
@@ -132,7 +133,7 @@ def _run_logged(command: list[str], log_path: Path, *, timeout: int) -> None:
         log.write(f"\nExit code: {completed.returncode}\n")
     if completed.returncode != 0:
         content = log_path.read_text(encoding="utf-8", errors="replace")
-        if Path(command[0]).name == "ffmpeg" and "matches no streams" in content and "0:a:0" in content:
+        if Path(command[0]).stem.lower() == "ffmpeg" and "matches no streams" in content and "0:a:0" in content:
             raise PipelineError(
                 "audio_stream_missing",
                 "The downloaded file has no audio track. Transcription cannot start. "
@@ -198,6 +199,11 @@ def yta_command(*, yta_function: str, source_url: str, output: Path) -> list[str
     """Build the login-shell invocation that preserves the owner's working yta path."""
     if os.environ.get("KITE_DESKTOP_TOKEN"):
         return [_command_path(yta_function), source_url, "--output", str(output)]
+    if procs.IS_WINDOWS:
+        # Windows has no zsh login shell; run the portable Python wrapper
+        # with the same yt-dlp options as scripts/yta.
+        wrapper = Path(__file__).resolve().parents[2] / "scripts" / "yta.py"
+        return [sys.executable, str(wrapper), source_url, "--output", str(output)]
     return [
         "zsh",
         "-lic",

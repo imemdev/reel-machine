@@ -2,19 +2,22 @@
 
 Reel Machine runs its interface, API, SQLite library, media pipeline, and speech
 recognition on your computer. The application currently displays the name **Kite**.
-This guide covers the supplied macOS source launcher. The optional Apple Silicon
+This guide covers the source launcher on macOS (`./scripts/run-local`) and
+Windows (`scripts\run-local.cmd` or `scripts\run-local.ps1`); the README has
+step-by-step install commands for both. On Windows, use `.venv\Scripts\python.exe`
+wherever this guide says `.venv/bin/python`. The optional Apple Silicon
 desktop bundle has a separate [packaging guide](../desktop/README.md).
 
 ## Prerequisites and installation
 
-Set up Python 3.12+, uv, Node.js/npm compatible with the pinned frontend dependencies,
-FFmpeg (including ffprobe), and zsh. Install missing tools explicitly during setup.
+Set up uv (it can install Python 3.12 for you), Node.js/npm compatible with the pinned
+frontend dependencies, and FFmpeg (including ffprobe). macOS also uses zsh (built in). Install missing tools explicitly during setup.
 The launcher and processing jobs do not install packages or model weights.
 
 From the repository root:
 
 ```sh
-uv venv .venv
+uv venv --python 3.12 .venv
 uv pip install -e '.[test,faruk,downloads]'
 npm --prefix frontend ci
 cp .env.example .env
