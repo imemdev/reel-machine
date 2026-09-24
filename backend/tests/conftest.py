@@ -15,6 +15,7 @@ def runtime(tmp_path) -> Runtime:
         base,
         database_path=tmp_path / "library.db",
         artifact_root=tmp_path / "runs",
+        media_root=tmp_path / "media",
         allow_fixture_sources=True,
         worker_poll_seconds=0.01,
         worker_concurrency=1,

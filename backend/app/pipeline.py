@@ -17,7 +17,7 @@ from hashlib import sha256 as digest_sha256
 from pathlib import Path
 from typing import Any
 
-from . import procs
+from . import media, procs
 from .db import STAGE_ORDER, Repository
 from .settings import Settings
 from .storage import ArtifactStore, sha256
@@ -41,6 +41,9 @@ MODEL_OPTIONS: dict[str, dict[str, str]] = {
     },
 
 }
+
+
+LEGACY_AUDIO_ONLY_DOWNLOADS = {"yta_audio", "tiktok_audio_bearing_media"}
 
 
 class PipelineError(RuntimeError):
@@ -112,7 +115,7 @@ def _command_path(command: str) -> str:
     return resolved
 
 
-def _run_logged(command: list[str], log_path: Path, *, timeout: int) -> None:
+def _run_logged(command: list[str], log_path: Path, *, timeout: int, env: dict[str, str] | None = None) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w", encoding="utf-8") as log:
         log.write(f"$ {shlex.join(command)}\n\n")
@@ -125,7 +128,10 @@ def _run_logged(command: list[str], log_path: Path, *, timeout: int) -> None:
                 stderr=subprocess.STDOUT,
                 check=False,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
+                env=env,
             )
         except subprocess.TimeoutExpired as error:
             log.write(f"\nTimed out after {timeout} seconds.\n")
@@ -183,6 +189,31 @@ def _write_silent_wav(path: Path) -> None:
         handle.setsampwidth(2)
         handle.setframerate(16_000)
         handle.writeframes(b"\x00\x00" * 1_600)
+
+
+def _optional_command_path(command: str) -> str | None:
+    try:
+        return _command_path(command)
+    except PipelineError:
+        return None
+
+
+def _largest_media(directory: Path) -> Path | None:
+    candidates = [
+        item for item in directory.iterdir()
+        if item.is_file() and item.suffix.lower() in media.VIDEO_SUFFIXES | media.AUDIO_SUFFIXES
+    ]
+    return max(candidates, key=lambda item: item.stat().st_size) if candidates else None
+
+
+def _result_metadata(result: dict[str, Any]) -> dict[str, Any]:
+    """Step results are fresh dicts or reused checkpoint rows; read either."""
+    if isinstance(result.get("metadata"), dict):
+        return result["metadata"]
+    try:
+        return json.loads(result.get("metadata_json") or "{}")
+    except (TypeError, ValueError):
+        return {}
 
 
 def _extract_error_code(log_path: Path) -> tuple[str, str] | None:
@@ -299,6 +330,9 @@ class PipelineRunner:
             metadata = json.loads(checkpoint["metadata_json"])
             if metadata.get("model_key") != run["model_key"]:
                 return None
+        if step == "download" and json.loads(checkpoint["metadata_json"]).get("kind") in LEGACY_AUDIO_ONLY_DOWNLOADS:
+            # Older versions saved audio only; download again to get the video.
+            return None
         path = Path(checkpoint["artifact_path"])
         if not self.artifacts.valid(path, checkpoint["artifact_sha256"]):
             return None
@@ -349,51 +383,79 @@ class PipelineRunner:
             self.repository.set_media_paths(video["id"], media_path=source, audio_path=None)
             return self._save(video=video, run=run, step="download", artifact=source, metadata=metadata, input_fingerprint=_fingerprint(video["source_url"]))
 
-        output = step_dir / "source.%(ext)s"
-        if video["platform"] == "tiktok":
-            command = tiktok_audio_command(
-                source_url=video["source_url"],
-                directory=step_dir,
-            )
-        else:
-            command = yta_command(
-                yta_function=self.settings.yta_function,
-                source_url=video["source_url"],
-                output=output,
-            )
         log_path = step_dir / "download.log"
-        _run_logged(command, log_path, timeout=self.settings.process_timeout_seconds)
-        candidates = [
-            item
-            for item in step_dir.iterdir()
-            if item.is_file() and item.suffix.lower() in {".mp3", ".m4a", ".wav", ".webm", ".mp4", ".mkv", ".mov", ".opus"}
-        ]
-        if not candidates:
+        if video["platform"] == "tiktok":
+            command = tiktok_audio_command(source_url=video["source_url"], directory=step_dir)
+            env = {**os.environ, "KITE_TIKTOK_PREFER": "video"}
+            downloader = "gallery-dl 1.32.12 + local stream selector (video first)"
+        else:
+            command = media.video_download_command(
+                ytdlp=self.settings.ytdlp,
+                ffmpeg=_optional_command_path(self.settings.ffmpeg),
+                source_url=video["source_url"],
+                output=step_dir / "source.%(ext)s",
+            )
+            env = None
+            downloader = "yt-dlp (video, H.264/AAC preferred, up to 1080p)"
+        _run_logged(command, log_path, timeout=self.settings.process_timeout_seconds, env=env)
+        source = _largest_media(step_dir)
+        if source is None:
             classified = _extract_error_code(log_path)
             if classified:
                 raise PipelineError(classified[0], classified[1])
             raise PipelineError("access_unknown", UNKNOWN_ACCESS_MESSAGE, retryable=True)
-        source = max(candidates, key=lambda item: item.stat().st_size)
-        if video["platform"] == "tiktok":
-            # Reject video-only/HTML downloads before recording a reusable checkpoint.
-            _run_logged([
-                _command_path(self.settings.ffmpeg), "-nostdin", "-hide_banner",
-                "-loglevel", "error", "-i", str(source), "-map", "0:a:0",
-                "-t", "0.1", "-f", "null", "-",
-            ], step_dir / "validate_audio.log", timeout=self.settings.process_timeout_seconds)
+
+        audio_source = source
+        if not self._has_audio(source, step_dir / "validate_audio.log"):
+            if video["platform"] != "tiktok":
+                raise PipelineError(
+                    "audio_stream_missing",
+                    "The downloaded video has no audio track. Transcription cannot start. See debug logs for details.",
+                )
+            # Keep the silent video for viewing, but fetch an audio-bearing stream to transcribe.
+            fallback_dir = step_dir / "audio-fallback"
+            fallback_dir.mkdir(exist_ok=True)
+            _run_logged(tiktok_audio_command(source_url=video["source_url"], directory=fallback_dir),
+                        fallback_dir / "download.log", timeout=self.settings.process_timeout_seconds,
+                        env={**os.environ, "KITE_TIKTOK_PREFER": "audio"})
+            audio_source = _largest_media(fallback_dir)
+            if audio_source is None or not self._has_audio(audio_source, fallback_dir / "validate_audio.log"):
+                raise PipelineError(
+                    "audio_stream_missing",
+                    "The downloaded file has no audio track. Transcription cannot start. "
+                    "Retry to fetch the video again. See debug logs for FFmpeg details.",
+                )
+        is_video = media.has_video_stream(source, self.settings.ffmpeg)
+        if is_video is None:
+            is_video = source.suffix.lower() in media.VIDEO_SUFFIXES
         metadata = {
             "path": str(source),
-            "kind": "tiktok_audio_bearing_media" if video["platform"] == "tiktok" else "yta_audio",
-            "downloader": "gallery-dl 1.32.12 + local audio selector" if video["platform"] == "tiktok" else self.settings.yta_function,
+            "kind": "video" if is_video else "audio_only",
+            "video_path": str(source) if is_video else None,
+            "audio_source": str(audio_source),
+            "downloader": downloader,
             "embedded_metadata": video["platform"] != "tiktok",
-            "embedded_thumbnail": video["platform"] != "tiktok",
-            "extractor_args": "youtube:player_client=web_embedded" if video["platform"] != "tiktok" else None,
         }
         self.repository.set_media_paths(video["id"], media_path=source, audio_path=None)
         return self._save(video=video, run=run, step="download", artifact=source, metadata=metadata, input_fingerprint=_fingerprint(video["source_url"]))
 
+    def _has_audio(self, path: Path, log_path: Path) -> bool:
+        try:
+            _run_logged([
+                _command_path(self.settings.ffmpeg), "-nostdin", "-hide_banner",
+                "-loglevel", "error", "-i", str(path), "-map", "0:a:0",
+                "-t", "0.1", "-f", "null", "-",
+            ], log_path, timeout=self.settings.process_timeout_seconds)
+        except PipelineError as error:
+            if error.code == "audio_stream_missing":
+                return False
+            raise
+        return True
+
     def _prepare_audio(self, video: dict[str, Any], run: dict[str, Any], download: dict[str, Any]) -> dict[str, Any]:
         destination = self.artifacts.step_dir(video["id"], run["id"], "prepare_audio") / "audio-16k-mono.wav"
+        download_meta = _result_metadata(download)
+        audio_input = download_meta.get("audio_source") or download["artifact_path"]
         if video["platform"] == "fixture":
             _write_silent_wav(destination)
         else:
@@ -405,7 +467,7 @@ class PipelineRunner:
                 "error",
                 "-y",
                 "-i",
-                download["artifact_path"],
+                str(audio_input),
                 "-map",
                 "0:a:0",
                 "-vn",
@@ -425,7 +487,30 @@ class PipelineRunner:
                 self.repository.set_audio_duration(video["id"], round(audio_file.getnframes() / audio_file.getframerate() * 1000))
         self.repository.set_media_paths(video["id"], media_path=Path(download["artifact_path"]), audio_path=destination)
         metadata = {"path": str(destination), "sample_rate": 16_000, "channels": 1}
-        return self._save(video=video, run=run, step="prepare_audio", artifact=destination, metadata=metadata, input_fingerprint=_fingerprint(download["artifact_path"]))
+        return self._save(video=video, run=run, step="prepare_audio", artifact=destination, metadata=metadata, input_fingerprint=_fingerprint(str(audio_input)))
+
+    def _export_media(self, video: dict[str, Any], download: dict[str, Any], audio: dict[str, Any]) -> None:
+        """Place clean copies in the media folder. Never fails the run."""
+        if self.settings.media_root is None or video["platform"] == "fixture":
+            return
+        download_meta = _result_metadata(download)
+        video_file = download_meta.get("video_path")
+        if video_file is None and download_meta.get("kind") is None:
+            # Checkpoint from an older version: decide from the file itself.
+            candidate = Path(download["artifact_path"])
+            video_file = str(candidate) if candidate.suffix.lower() in media.VIDEO_SUFFIXES else None
+        try:
+            current = self.repository.hydrate_video(video["id"])
+            exported = media.export_media(
+                self.settings.media_root,
+                current,
+                video_file=Path(video_file) if video_file else None,
+                audio_file=Path(audio["artifact_path"]),
+            )
+            self.repository.set_library_paths(video["id"], video_path=exported["video"], audio_path=exported["audio"])
+        except OSError as error:
+            run_dir = self.artifacts.root / video["id"]
+            (run_dir / "media-export-error.log").write_text(f"Could not copy files to the media folder: {error}\n", encoding="utf-8")
 
     def _check_language(self, video: dict[str, Any], run: dict[str, Any], audio: dict[str, Any]) -> dict[str, Any]:
         fixture = video["canonical_id"]
@@ -555,6 +640,7 @@ class PipelineRunner:
             self._execute_step(video, run, "inspect", lambda: self._inspect(video, run))
             download = self._execute_step(video, run, "download", lambda: self._download(video, run))
             audio = self._execute_step(video, run, "prepare_audio", lambda: self._prepare_audio(video, run, download))
+            self._export_media(video, download, audio)
             self._execute_step(video, run, "check_language", lambda: self._check_language(video, run, audio))
             transcription = self._execute_step(video, run, "transcribe", lambda: self._transcribe(video, run, audio))
             self._execute_step(video, run, "format", lambda: self._format(video, run, transcription))

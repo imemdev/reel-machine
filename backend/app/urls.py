@@ -12,7 +12,7 @@ class URLValidationError(ValueError):
         self.code = code
 
 
-SUPPORTED_PLATFORMS = ("instagram", "facebook", "tiktok")
+SUPPORTED_PLATFORMS = ("instagram", "facebook", "tiktok", "youtube")
 TRACKING_QUERY_KEYS = {"igsh", "igshid", "si", "utm_source", "utm_medium", "utm_campaign"}
 
 
@@ -32,7 +32,27 @@ def _clean_path(path: str) -> list[str]:
     return [part for part in path.split("/") if part]
 
 
+YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
+                 "youtube-nocookie.com", "www.youtube-nocookie.com"}
+YOUTUBE_ID = re.compile(r"[A-Za-z0-9_-]{11}")
+
+
+def _youtube_id(host: str, parsed) -> str | None:
+    parts = _clean_path(parsed.path)
+    if host == "youtu.be":
+        candidate = parts[0] if parts else ""
+    elif parts[:1] == ["watch"] or not parts:
+        candidate = (parse_qs(parsed.query).get("v") or [""])[0]
+    elif len(parts) >= 2 and parts[0] in {"shorts", "live", "embed", "v", "e"}:
+        candidate = parts[1]
+    else:
+        return None
+    return candidate if YOUTUBE_ID.fullmatch(candidate) else None
+
+
 def _canonical_url(platform: str, canonical_id: str, parsed) -> str:
+    if platform == "youtube":
+        return f"https://www.youtube.com/watch?v={canonical_id}"
     if platform == "instagram":
         prefix = "reel"
     elif platform == "tiktok":
@@ -47,7 +67,7 @@ def _canonical_url(platform: str, canonical_id: str, parsed) -> str:
 def canonicalize_url(value: str, *, allow_fixture: bool = False) -> VideoIdentity:
     source_url = value.strip()
     if not source_url:
-        raise URLValidationError("Paste a public Facebook, Instagram, or TikTok video URL.")
+        raise URLValidationError("Paste a public YouTube, Facebook, Instagram, or TikTok video URL.")
     if source_url.startswith("fixture://"):
         if not allow_fixture:
             raise URLValidationError(
@@ -110,9 +130,19 @@ def canonicalize_url(value: str, *, allow_fixture: bool = False) -> VideoIdentit
                 "Use an individual TikTok video URL.",
                 "unsupported_url_surface",
             )
+    elif host in YOUTUBE_HOSTS or host == "youtu.be":
+        video_id = _youtube_id(host, parsed)
+        if video_id is None:
+            raise URLValidationError(
+                "Use an individual YouTube video or Shorts URL (not a channel or playlist).",
+                "unsupported_url_surface",
+            )
+        # Drop playlist, timestamp, and tracking parameters: one URL per video.
+        watch_url = f"https://www.youtube.com/watch?v={video_id}"
+        return VideoIdentity(platform="youtube", canonical_id=video_id, canonical_url=watch_url, source_url=watch_url)
     else:
         raise URLValidationError(
-            "This platform is not supported. Use Facebook, Instagram, or TikTok.",
+            "This platform is not supported. Use YouTube, Facebook, Instagram, or TikTok.",
             "unsupported_platform",
         )
 

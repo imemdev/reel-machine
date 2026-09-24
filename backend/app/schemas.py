@@ -95,3 +95,16 @@ class NoteCreateRequest(BaseModel):
 class NoteUpdateRequest(NoteCreateRequest):
     title: str = Field(default="Untitled note", min_length=1, max_length=240)
     done: bool = False
+
+
+class MediaFolderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    folder: Literal["root", "videos", "audio"] = "root"
+
+
+class MediaOpenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["video", "audio"]
+    reveal: bool = False

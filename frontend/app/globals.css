@@ -375,3 +375,20 @@ h3 { margin-top: 4px; font-size: 15px; font-weight: 740; letter-spacing: -0.025e
 
 .processing-estimate { display: block; margin-top: 5px; color: var(--ink-muted); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
 .table-row { padding-block: 10px; }
+
+/* Media files (video detail) and media folder (settings) */
+.media-file-list { display: grid; gap: 12px; margin-top: 14px; }
+.media-file { overflow: hidden; background: var(--bg); border: 1px solid var(--line); border-radius: 11px; }
+.media-player { display: block; width: 100%; max-height: 320px; background: #0b0f16; }
+.media-audio { height: 40px; background: var(--bg-soft); }
+.media-file-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 11px; color: var(--accent); }
+.media-file-copy { min-width: 0; flex: 1 1 140px; }
+.media-file-copy strong, .media-file-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-file-copy strong { color: var(--ink); font-size: 11px; }
+.media-file-copy span { margin-top: 2px; color: var(--ink-muted); font-size: 10px; }
+.media-folder-panel { min-height: 0; }
+.media-folder-paths { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; margin-top: 16px; }
+.media-folder-paths > div { min-width: 0; padding: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; }
+.media-folder-paths code { display: block; margin-top: 6px; overflow: hidden; color: var(--ink-soft); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.media-folder-actions { flex-wrap: wrap; justify-content: flex-start; margin-top: 16px; }
+@media (max-width: 720px) { .media-folder-paths { grid-template-columns: 1fr; } }

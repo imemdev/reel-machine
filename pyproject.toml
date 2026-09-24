@@ -16,7 +16,8 @@ dependencies = [
 
 [project.optional-dependencies]
 downloads = [
-  "yt-dlp",
+  # [default] adds the YouTube challenge solver (yt-dlp-ejs).
+  "yt-dlp[default]",
   "gallery-dl==1.32.12",
 ]
 test = [

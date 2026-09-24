@@ -17,7 +17,10 @@ import {
   DownloadSimple,
   DotsThree,
   FileArrowDown,
+  FileAudio,
   FileText,
+  FileVideo,
+  FolderOpen,
   FunnelSimple,
   GearSix,
   HardDrives,
@@ -50,10 +53,14 @@ import {
   API_BASE,
   ApiError,
   exportUrl,
+  mediaUrl,
   type Activity as ActivityItem,
   type Config,
   type Counts,
   type JobAction,
+  type MediaFolder,
+  type MediaInfo,
+  type MediaKind,
   type ModelOption,
   type Preview,
   type Run,
@@ -161,6 +168,7 @@ function formatDate(value: string | null | undefined, withTime = true) {
 }
 
 function platformLabel(platform: string) {
+  if (platform === "youtube") return "YouTube";
   if (platform === "instagram") return "Instagram";
   if (platform === "facebook") return "Facebook";
   if (platform === "tiktok") return "TikTok";
@@ -499,7 +507,7 @@ export default function LibraryApp() {
             void refresh();
           }} /> : null}
           <NotesPage active={activeView === "notes"} onCount={setNoteCount} />
-          {activeView === "settings" ? <SettingsPage models={models} theme={theme} onThemeChange={setTheme} /> : null}
+          {activeView === "settings" ? <SettingsPage models={models} theme={theme} onThemeChange={setTheme} onNotice={showNotice} /> : null}
         </main>
       </div>
 
@@ -933,7 +941,7 @@ function Thumb({ video, size }: { video: Video; size: "small" | "medium" }) {
 
 function EmptyLibrary({ hasFilter }: { hasFilter: boolean }) {
   return (
-    <div className="empty-library"><div className="empty-orbit large"><Stack size={28} weight="duotone" /></div><strong>{hasFilter ? "Nothing matches this view" : "Your library starts here"}</strong><span>{hasFilter ? "Try a different stage, tag, or search term." : "Save a public Facebook, Instagram, or TikTok video to begin."}</span></div>
+    <div className="empty-library"><div className="empty-orbit large"><Stack size={28} weight="duotone" /></div><strong>{hasFilter ? "Nothing matches this view" : "Your library starts here"}</strong><span>{hasFilter ? "Try a different stage, tag, or search term." : "Save a public YouTube, Instagram, Facebook, or TikTok video to begin."}</span></div>
   );
 }
 
@@ -1093,12 +1101,12 @@ function VideoDetail({
             {controlBusy === "delete" ? "Stopping & deleting…" : video.stage === "processing" && !video.paused ? "Stop & delete" : "Delete video"}
           </button>
         </div>
-        <p className="panel-copy">Delete removes this video's cached audio, video, transcripts, and history. Installed models are kept.</p>
+        <p className="panel-copy">Delete removes this video's audio, video (including the media folder copies), transcripts, and history. Installed models are kept.</p>
         {controlError ? <div className="inline-error" role="alert">{controlError}</div> : null}
       </div>
 
       {video.error_message ? <div className={`error-card error-${video.error_code === "private_video" ? "private" : "general"}`}><WarningCircle size={18} weight="fill" /><div><strong>{video.error_code === "private_video" ? "Private source" : video.error_code === "uncertain_language" ? "Language needs review" : "Processing stopped"}</strong><span>{video.error_message}</span><small>{video.failed_step ? `Stopped at ${stepLabel(video.failed_step)}.` : "You can keep the link and try again when the source is available."}</small></div></div> : null}
-      {video.stage === "complete" ? <div className="complete-card"><LockSimple size={18} weight="fill" /><div><strong>Read-only record</strong><span>Source media has been removed. Your transcript and edit history are retained.</span></div></div> : null}
+      {video.stage === "complete" ? <div className="complete-card"><LockSimple size={18} weight="fill" /><div><strong>Read-only record</strong><span>Working copies were cleaned up. Your transcript, edit history, and the files in your media folder are kept.</span></div></div> : null}
 
       <section className="detail-section metadata-section">
         <div className="detail-section-heading"><div><span className="section-eyebrow">Library details</span><h3>Keep the context</h3></div>{editable ? <button className="button button-quiet button-small" onClick={saveDetails} disabled={detailsBusy}>{detailsBusy ? <CircleNotch size={14} className="spin" /> : <Check size={14} />} Save details</button> : null}</div>
@@ -1107,6 +1115,8 @@ function VideoDetail({
         <label className="field-label"><span>Tags <small>comma separated</small></span><input name="video-tags" value={tags} onChange={(event) => setTags(event.target.value)} disabled={!editable} /></label>
         <div className="source-url-row"><Tag size={14} /><span title={video.source_url}>{video.source_url}</span><a href={video.source_page_url || video.canonical_url} target="_blank" rel="noreferrer">Open source <ArrowUpRightIcon /></a></div>
       </section>
+
+      <MediaFiles video={video} onNotice={onNotice} />
 
       <section className="detail-section history-section">
         <div className="detail-section-heading"><div><span className="section-eyebrow">Pipeline</span><h3>Processing history</h3></div>{nextAction ? <button className="button button-primary button-small" onClick={() => onOpenModel(nextAction)}><Play size={14} weight="fill" /> {actionLabel(nextAction)}</button> : null}</div>
@@ -1133,6 +1143,42 @@ function VideoDetail({
       {video.stage === "done" ? <div className="detail-footer-actions"><button className="button button-secondary" onClick={() => onStageAction(video.id, "move_to_processed")}><ArrowLeft size={16} /> Move to Processed</button><button className="button button-primary" onClick={() => setConfirmComplete(true)}><LockSimple size={16} weight="fill" /> Complete record</button></div> : null}
       {confirmComplete ? <ConfirmComplete onCancel={() => setConfirmComplete(false)} onConfirm={() => { setConfirmComplete(false); onStageAction(video.id, "complete"); }} /> : null}
     </div>
+  );
+}
+
+function MediaFiles({ video, onNotice }: { video: Video; onNotice: (message: string, kind?: NoticeKind) => void }) {
+  const media = video.media;
+  const [busy, setBusy] = useState<string | null>(null);
+  const open = async (kind: MediaKind, reveal: boolean) => {
+    setBusy(`${kind}-${reveal}`);
+    try {
+      await api.openVideoMedia(video.id, kind, reveal);
+    } catch (error) {
+      onNotice(errorMessage(error), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+  const fileName = (path: string | null) => path?.split(/[\\/]/).pop() ?? "";
+  const hasAny = Boolean(media?.video_available || media?.audio_available);
+  return (
+    <section className="detail-section media-section">
+      <div className="detail-section-heading"><div><span className="section-eyebrow">Media files</span><h3>{hasAny ? "Watch and listen" : "No files yet"}</h3></div></div>
+      {hasAny ? <div className="media-file-list">
+        {media?.video_available ? <div className="media-file">
+          <video className="media-player" src={mediaUrl(video.id, "video")} controls preload="metadata" />
+          <div className="media-file-row"><FileVideo size={18} weight="duotone" /><div className="media-file-copy"><strong>Video</strong><span title={media.video_path ?? ""}>{fileName(media.video_path)}</span></div>
+            <button className="button button-secondary button-small" disabled={Boolean(busy)} onClick={() => void open("video", false)}>{busy === "video-false" ? <CircleNotch size={14} className="spin" /> : <Play size={14} />} Open</button>
+            <button className="button button-quiet button-small" disabled={Boolean(busy)} onClick={() => void open("video", true)}><FolderOpen size={14} /> Show in folder</button></div>
+        </div> : null}
+        {media?.audio_available ? <div className="media-file">
+          <audio className="media-player media-audio" src={mediaUrl(video.id, "audio")} controls preload="none" />
+          <div className="media-file-row"><FileAudio size={18} weight="duotone" /><div className="media-file-copy"><strong>Prepared audio · 16 kHz mono WAV</strong><span title={media.audio_path ?? ""}>{fileName(media.audio_path)}</span></div>
+            <button className="button button-secondary button-small" disabled={Boolean(busy)} onClick={() => void open("audio", false)}>{busy === "audio-false" ? <CircleNotch size={14} className="spin" /> : <Play size={14} />} Open</button>
+            <button className="button button-quiet button-small" disabled={Boolean(busy)} onClick={() => void open("audio", true)}><FolderOpen size={14} /> Show in folder</button></div>
+        </div> : null}
+      </div> : <div className="empty-inline"><FileVideo size={16} /><span>{video.stage === "processing" ? "The video and its prepared audio appear here as soon as they are downloaded." : "Process this video to save its video and audio in your media folder."}</span></div>}
+    </section>
   );
 }
 
@@ -1175,7 +1221,7 @@ function TranscriptSegment({
 }
 
 function ConfirmComplete({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
-  return <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><motion.div className="confirm-card" initial={{ opacity: 0, scale: 0.97, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }}><div className="confirm-icon"><LockSimple size={21} weight="fill" /></div><h3>Complete this record?</h3><p>The source audio/video will be deleted from local storage. The transcript and edit history will remain read-only.</p><div className="modal-actions"><button className="button button-secondary" onClick={onCancel}>Keep in Done</button><button className="button button-primary" onClick={onConfirm}>Delete source & complete</button></div></motion.div></motion.div>;
+  return <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><motion.div className="confirm-card" initial={{ opacity: 0, scale: 0.97, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }}><div className="confirm-icon"><LockSimple size={21} weight="fill" /></div><h3>Complete this record?</h3><p>Internal working copies will be cleaned up. Your video and audio stay in the media folder, and the transcript and edit history remain read-only.</p><div className="modal-actions"><button className="button button-secondary" onClick={onCancel}>Keep in Done</button><button className="button button-primary" onClick={onConfirm}>Complete record</button></div></motion.div></motion.div>;
 }
 
 function AddVideoDialog({
@@ -1249,7 +1295,7 @@ function AddVideoDialog({
     <motion.div className="modal-card add-modal" initial={{ opacity: 0, y: 14, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.22 }}>
       <div className="modal-header"><div><span className="section-eyebrow">New library item</span><h2>Bring a video into focus</h2><p>Paste a public social-video link. Metadata lookup is separate from download and transcription.</p></div><button className="icon-button" onClick={onClose} aria-label="Close add video dialog"><X size={19} /></button></div>
       <form onSubmit={(event) => { event.preventDefault(); void inspect(); }}>
-        <label className="field-label large-label">Video URL<div className="url-input-wrap"><LinkIcon /><input name="video-url" autoFocus value={url} onChange={(event) => { setUrl(event.target.value); setSubmitted(false); }} placeholder="https://www.instagram.com/reel/..." /><button className="button button-dark button-small" type="submit" disabled={previewBusy || !url.trim()}>{previewBusy ? <CircleNotch size={15} className="spin" /> : <MagnifyingGlass size={15} />} {previewBusy ? "Checking" : "Preview"}</button></div></label>
+        <label className="field-label large-label">Video URL<div className="url-input-wrap"><LinkIcon /><input name="video-url" autoFocus value={url} onChange={(event) => { setUrl(event.target.value); setSubmitted(false); }} placeholder="https://www.youtube.com/watch?v=… or an Instagram / TikTok link" /><button className="button button-dark button-small" type="submit" disabled={previewBusy || !url.trim()}>{previewBusy ? <CircleNotch size={15} className="spin" /> : <MagnifyingGlass size={15} />} {previewBusy ? "Checking" : "Preview"}</button></div></label>
       </form>
       <div className="fixture-hint"><Info size={14} /><span>For local UI testing only, enable <code>ALLOW_FIXTURE_SOURCES=true</code> and use <code>fixture://tunisian-demo</code>.</span></div>
       {dialogError ? <div className="inline-error" role="alert"><WarningCircle size={16} /><span>{dialogError}</span></div> : submitted && !preview && !previewBusy ? <div className="inline-error" role="alert"><WarningCircle size={16} /><span>Nothing to preview yet. Check the URL and try again.</span></div> : null}
@@ -1266,8 +1312,46 @@ function LinkIcon() {
   return <span className="link-icon"><ArrowRight size={16} /></span>;
 }
 
-function SettingsPage({ models, theme, onThemeChange }: { models: ModelOption[]; theme: Theme; onThemeChange: (theme: Theme) => void }) {
-  return <div className="view-stack settings-view"><div className="page-heading compact-heading"><div><span className="eyebrow"><GearSix size={14} weight="fill" /> Workspace setup</span><h1>Settings</h1><p className="page-lede">Small choices that keep this local library predictable.</p></div></div><div className="settings-grid"><section className="panel settings-panel"><div className="panel-heading"><div><span className="section-eyebrow">Recognition</span><h2>Local model readiness</h2></div><Lightning size={18} className="panel-heading-icon" weight="duotone" /></div><p className="panel-copy">FarukSTT is the default for every Tunisian Arabic video. Processing starts directly with this local model.</p><div className="settings-model-list">{models.map((model) => <div className="settings-model" key={model.key}><div className={`model-symbol ${model.key === "farukstt" ? "symbol-saffron" : "symbol-ink"}`}>{model.key === "farukstt" ? <Waveform size={18} /> : <TextT size={18} weight="bold" />}</div><div><strong>{model.label}</strong><span>{model.source}</span><small>{model.availability_note}</small></div><span className={`ready-pill ${model.available ? "is-ready" : "is-pending"}`}>{model.available ? "Ready" : "Setup"}</span></div>)}</div></section><section className="panel settings-panel"><div className="panel-heading"><div><span className="section-eyebrow">Appearance</span><h2>Choose a surface</h2></div><Palette size={18} className="panel-heading-icon" weight="duotone" /></div><p className="panel-copy">The workspace remembers this choice in your browser. Motion follows your system's reduced-motion preference.</p><ThemeMenu theme={theme} onChange={onThemeChange} /><div className="settings-rule" /><div className="privacy-row"><ShieldCheck size={20} weight="duotone" /><div><strong>Local by design</strong><span>SQLite, local artifacts, and a local worker. No account or hosted transcript service is configured.</span></div></div></section><section className="panel settings-panel full-settings"><div className="panel-heading"><div><span className="section-eyebrow">Acquisition</span><h2>Working download path</h2></div><HardDrives size={18} className="panel-heading-icon" weight="duotone" /></div><div className="acquisition-grid"><div><span className="setting-label">URL metadata</span><strong>yt-dlp + web_embedded</strong><small>Metadata inspection uses the web embedded extractor argument.</small></div><div><span className="setting-label">Media download</span><strong>Local downloader tools</strong><small>Instagram and Facebook use the configured audio wrapper. TikTok uses the installed gallery-dl adapter. Tools are installed during setup, with your approval.</small></div><div><span className="setting-label">Audio preparation</span><strong>FFmpeg · mono 16 kHz WAV</strong><small>Recognition gets a stable local audio artifact and can resume from checkpoints.</small></div></div></section></div></div>;
+function SettingsPage({ models, theme, onThemeChange, onNotice }: { models: ModelOption[]; theme: Theme; onThemeChange: (theme: Theme) => void; onNotice: (message: string, kind?: NoticeKind) => void }) {
+  return <div className="view-stack settings-view"><div className="page-heading compact-heading"><div><span className="eyebrow"><GearSix size={14} weight="fill" /> Workspace setup</span><h1>Settings</h1><p className="page-lede">Small choices that keep this local library predictable.</p></div></div><div className="settings-grid"><section className="panel settings-panel"><div className="panel-heading"><div><span className="section-eyebrow">Recognition</span><h2>Local model readiness</h2></div><Lightning size={18} className="panel-heading-icon" weight="duotone" /></div><p className="panel-copy">FarukSTT is the default for every Tunisian Arabic video. Processing starts directly with this local model.</p><div className="settings-model-list">{models.map((model) => <div className="settings-model" key={model.key}><div className={`model-symbol ${model.key === "farukstt" ? "symbol-saffron" : "symbol-ink"}`}>{model.key === "farukstt" ? <Waveform size={18} /> : <TextT size={18} weight="bold" />}</div><div><strong>{model.label}</strong><span>{model.source}</span><small>{model.availability_note}</small></div><span className={`ready-pill ${model.available ? "is-ready" : "is-pending"}`}>{model.available ? "Ready" : "Setup"}</span></div>)}</div></section><section className="panel settings-panel"><div className="panel-heading"><div><span className="section-eyebrow">Appearance</span><h2>Choose a surface</h2></div><Palette size={18} className="panel-heading-icon" weight="duotone" /></div><p className="panel-copy">The workspace remembers this choice in your browser. Motion follows your system's reduced-motion preference.</p><ThemeMenu theme={theme} onChange={onThemeChange} /><div className="settings-rule" /><div className="privacy-row"><ShieldCheck size={20} weight="duotone" /><div><strong>Local by design</strong><span>SQLite, local artifacts, and a local worker. No account or hosted transcript service is configured.</span></div></div></section><MediaFolderPanel onNotice={onNotice} /><section className="panel settings-panel full-settings"><div className="panel-heading"><div><span className="section-eyebrow">Acquisition</span><h2>Working download path</h2></div><HardDrives size={18} className="panel-heading-icon" weight="duotone" /></div><div className="acquisition-grid"><div><span className="setting-label">URL metadata</span><strong>yt-dlp</strong><small>Title, creator, duration, and cover for YouTube, Instagram, and Facebook links. TikTok uses gallery-dl.</small></div><div><span className="setting-label">Media download</span><strong>Full video · MP4</strong><small>YouTube, Instagram, and Facebook download through yt-dlp (H.264/AAC preferred, up to 1080p). TikTok uses the gallery-dl adapter, video first.</small></div><div><span className="setting-label">Audio preparation</span><strong>FFmpeg · mono 16 kHz WAV</strong><small>Recognition gets a stable local audio artifact and can resume from checkpoints.</small></div></div></section></div></div>;
+}
+
+function MediaFolderPanel({ onNotice }: { onNotice: (message: string, kind?: NoticeKind) => void }) {
+  const [info, setInfo] = useState<MediaInfo | null>(null);
+  const [busy, setBusy] = useState<MediaFolder | null>(null);
+  useEffect(() => {
+    let active = true;
+    api.getMedia().then((value) => { if (active) setInfo(value); }).catch(() => { if (active) setInfo(null); });
+    return () => { active = false; };
+  }, []);
+  const open = async (folder: MediaFolder) => {
+    setBusy(folder);
+    try {
+      await api.openMediaFolder(folder);
+    } catch (error) {
+      onNotice(errorMessage(error), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+  const button = (folder: MediaFolder, label: string, Icon: ComponentType<{ size?: number; weight?: "duotone" }>) => (
+    <button className="button button-secondary" disabled={!info?.enabled || Boolean(busy)} onClick={() => void open(folder)}>{busy === folder ? <CircleNotch size={16} className="spin" /> : <Icon size={16} weight="duotone" />} {label}</button>
+  );
+  return (
+    <section className="panel settings-panel full-settings media-folder-panel">
+      <div className="panel-heading"><div><span className="section-eyebrow">Media folder</span><h2>Your videos and audio</h2></div><FolderOpen size={18} className="panel-heading-icon" weight="duotone" /></div>
+      <p className="panel-copy">Every downloaded video and its prepared audio are saved here with matching names, sorted by platform. Complete keeps them; Delete removes them.</p>
+      {info?.enabled ? <div className="media-folder-paths">
+        <div><span className="setting-label">Videos · {info.video_count} {info.video_count === 1 ? "file" : "files"}</span><code>{info.videos}</code></div>
+        <div><span className="setting-label">Audio · {info.audio_count} {info.audio_count === 1 ? "file" : "files"}</span><code>{info.audio}</code></div>
+      </div> : <p className="panel-copy">{info ? "The media folder is turned off. Set MEDIA_ROOT in .env to enable it." : "Loading…"}</p>}
+      <div className="modal-actions media-folder-actions">
+        {button("videos", "Open videos folder", FileVideo)}
+        {button("audio", "Open audio folder", FileAudio)}
+        {button("root", "Open media folder", FolderOpen)}
+      </div>
+    </section>
+  );
 }
 
 function ThemeMenu({ theme, onChange, compact = false }: { theme: Theme; onChange: (theme: Theme) => void; compact?: boolean }) {

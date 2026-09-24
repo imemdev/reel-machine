@@ -20,8 +20,8 @@ def main() -> int:
     settings = None
     if args.run_id and os.environ.get("KITE_RUN_SETTINGS"):
         values = json.loads(os.environ["KITE_RUN_SETTINGS"])
-        for key in ("project_root", "database_path", "artifact_root", "whisper_large_v3_model", "prompt_file", "ledger_file"):
-            if values[key] is not None:
+        for key in ("project_root", "database_path", "artifact_root", "whisper_large_v3_model", "prompt_file", "ledger_file", "media_root"):
+            if values.get(key) is not None:
                 values[key] = Path(values[key])
         values["api_origins"] = tuple(values["api_origins"])
         settings = Settings(**values)

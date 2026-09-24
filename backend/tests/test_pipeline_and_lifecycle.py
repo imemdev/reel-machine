@@ -108,7 +108,7 @@ def test_reprocess_records_the_second_explicit_model_choice(runtime) -> None:
 
 
 def test_retry_reuses_completed_checkpoints_after_a_format_failure(tmp_path) -> None:
-    settings = replace(load_settings(), database_path=tmp_path / "library.db", artifact_root=tmp_path / "runs", allow_fixture_sources=True)
+    settings = replace(load_settings(), database_path=tmp_path / "library.db", artifact_root=tmp_path / "runs", media_root=tmp_path / "media", allow_fixture_sources=True)
     runtime = build_runtime(settings, failure_plan={"format": 1})
     video = add_fixture(runtime)
     failed = queue_fixture(runtime, video["id"], "farukstt")

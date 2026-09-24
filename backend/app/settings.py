@@ -43,6 +43,8 @@ class Settings:
     max_batch_size: int
     process_timeout_seconds: int
     worker_concurrency: int = 1
+    # Organized copies of downloaded videos and prepared audio (None disables).
+    media_root: Path | None = None
 
     def __post_init__(self) -> None:
         if not 1 <= self.worker_concurrency <= 3:
@@ -86,4 +88,5 @@ def load_settings() -> Settings:
         worker_poll_seconds=float(os.environ.get("WORKER_POLL_SECONDS", "0.5")),
         max_batch_size=int(os.environ.get("MAX_BATCH_SIZE", "12")),
         process_timeout_seconds=int(os.environ.get("PROCESS_TIMEOUT_SECONDS", "3600")),
+        media_root=_path("MEDIA_ROOT", Path.home() / "Documents" / "Reel Machine"),
     )

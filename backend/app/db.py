@@ -186,6 +186,9 @@ class Repository:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(videos)")}
             if "paused" not in columns:
                 connection.execute("ALTER TABLE videos ADD COLUMN paused INTEGER NOT NULL DEFAULT 0")
+            for column in ("library_video_path", "library_audio_path"):
+                if column not in columns:
+                    connection.execute(f"ALTER TABLE videos ADD COLUMN {column} TEXT")
             connection.commit()
 
     def _activity(
@@ -426,6 +429,18 @@ class Repository:
             connection.execute(
                 "UPDATE videos SET source_media_path = ?, source_audio_path = ?, updated_at = ? WHERE id = ?",
                 (str(media_path), str(audio_path) if audio_path else None, now(), video_id),
+            )
+            connection.commit()
+
+    def set_library_paths(self, video_id: str, *, video_path: Path | None, audio_path: Path | None) -> None:
+        """Remember the organized copies in the media folder (kept on Complete)."""
+        with self.connection() as connection:
+            self.begin(connection)
+            self._video_row(connection, video_id)
+            connection.execute(
+                "UPDATE videos SET library_video_path = COALESCE(?, library_video_path), "
+                "library_audio_path = COALESCE(?, library_audio_path) WHERE id = ?",
+                (str(video_path) if video_path else None, str(audio_path) if audio_path else None, video_id),
             )
             connection.commit()
 
@@ -779,6 +794,10 @@ class Repository:
                 raise ConflictError("Stop processing before deleting video data")
             # Remove files before committing the row deletion so filesystem failures
             # leave a record that can be retried. The worker has already been stopped.
+            for column in ("library_video_path", "library_audio_path"):
+                recorded = video[column] if column in video.keys() else None
+                if recorded and Path(recorded).is_file():
+                    Path(recorded).unlink()
             if self.artifact_root:
                 target = self.artifact_root / video_id
                 if target.is_symlink():

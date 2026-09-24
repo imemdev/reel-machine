@@ -30,11 +30,28 @@ def audio_urls(video: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(url for url in urls if isinstance(url, str) and url.startswith("https://")))
 
 
+def video_urls(video: dict[str, Any]) -> list[str]:
+    """Muxed MP4 (picture + sound) first; audio-only streams stay as a fallback."""
+    urls: list[str] = []
+    variants = video.get("bitrateInfo") or []
+    if isinstance(variants, dict):
+        variants = [variants]
+    muxed = [item for item in variants if str(item.get("Format", "")).lower() == "mp4"]
+    for variant in sorted(muxed, key=lambda item: int(item.get("Bitrate") or 0), reverse=True):
+        urls.extend((variant.get("PlayAddr") or {}).get("UrlList") or [])
+    urls.extend([video.get("playAddr"), video.get("downloadAddr")])
+    urls.extend(audio_urls(video))
+    return list(dict.fromkeys(url for url in urls if isinstance(url, str) and url.startswith("https://")))
+
+
 def main() -> None:
+    import os
+
     import gallery_dl
     from gallery_dl.extractor.tiktok import TiktokExtractor
 
-    TiktokExtractor._extract_video_urls = lambda self, video: audio_urls(video)
+    select = video_urls if os.environ.get("KITE_TIKTOK_PREFER") == "video" else audio_urls
+    TiktokExtractor._extract_video_urls = lambda self, video: select(video)
     gallery_dl.main()
 
 

@@ -46,7 +46,7 @@ export interface Run extends Job {
 
 export interface Video {
   id: string;
-  platform: "instagram" | "facebook" | "tiktok" | "fixture" | string;
+  platform: "youtube" | "instagram" | "facebook" | "tiktok" | "fixture" | string;
   canonical_id: string;
   canonical_url: string;
   source_url: string;
@@ -69,7 +69,27 @@ export interface Video {
   job: Job | null;
   estimate?: { status: string; sample_count: number; transcription_seconds: number | null; remaining_seconds: number | null; estimated_finish_at: string | null; queue_position: number | null; ahead_seconds: number | null } | null;
   runs?: Run[] | null;
+  media?: VideoMedia | null;
 }
+
+export interface VideoMedia {
+  video_available: boolean;
+  audio_available: boolean;
+  video_path: string | null;
+  audio_path: string | null;
+}
+
+export interface MediaInfo {
+  enabled: boolean;
+  root: string | null;
+  videos: string | null;
+  audio: string | null;
+  video_count: number;
+  audio_count: number;
+}
+
+export type MediaFolder = "root" | "videos" | "audio";
+export type MediaKind = "video" | "audio";
 
 export interface ModelOption {
   key: "farukstt";
@@ -258,6 +278,12 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ video_ids, action }),
   }),
+  getMedia: () => request<MediaInfo>("/api/media"),
+  openMediaFolder: (folder: MediaFolder) => request<void>("/api/media/open", { method: "POST", body: JSON.stringify({ folder }) }),
+  openVideoMedia: (id: string, kind: MediaKind, reveal = false) => request<void>(`/api/videos/${encodeURIComponent(id)}/media/open`, {
+    method: "POST",
+    body: JSON.stringify({ kind, reveal }),
+  }),
   updateTranscript: (id: string, expected_revision_id: string, segments: Segment[]) => request<Video>(`/api/videos/${encodeURIComponent(id)}/transcript`, {
     method: "PATCH",
     body: JSON.stringify({ expected_revision_id, segments }),
@@ -266,4 +292,8 @@ export const api = {
 
 export function exportUrl(id: string, format: "txt" | "srt" | "vtt" | "timestamped") {
   return `${API_BASE}/api/videos/${encodeURIComponent(id)}/export?format=${format}`;
+}
+
+export function mediaUrl(id: string, kind: MediaKind) {
+  return `${API_BASE}/api/videos/${encodeURIComponent(id)}/media/${kind}`;
 }

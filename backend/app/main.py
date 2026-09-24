@@ -6,8 +6,9 @@ from typing import Any, Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 
+from . import media
 from .db import ConflictError, NotFoundError, RepositoryError, Repository, STAGES, STAGE_ORDER
 from .metadata import inspect_video
 from .thumbnails import cache_thumbnail, saved_thumbnail
@@ -22,6 +23,8 @@ from .runtime import Runtime, build_runtime
 from .schemas import (
     BatchRequest,
     BatchStageActionRequest,
+    MediaFolderRequest,
+    MediaOpenRequest,
     PreviewRequest,
     NoteCreateRequest,
     NoteUpdateRequest,
@@ -105,7 +108,43 @@ def serialize_video(video: dict[str, Any], *, runs: list[dict[str, Any]] | None 
             else None
         ),
         "runs": runs,
+        "media": _media_payload(video),
     }
+
+
+def _existing(path: str | None) -> Path | None:
+    return Path(path) if path and Path(path).is_file() else None
+
+
+def _media_payload(video: dict[str, Any]) -> dict[str, Any]:
+    video_file = _existing(video.get("library_video_path"))
+    audio_file = _existing(video.get("library_audio_path"))
+    return {
+        "video_available": video_file is not None,
+        "audio_available": audio_file is not None,
+        "video_path": str(video_file) if video_file else None,
+        "audio_path": str(audio_file) if audio_file else None,
+    }
+
+
+def backfill_media(repository: Repository, root: Path) -> int:
+    """Copy media from videos processed before the media folder existed."""
+    exported = 0
+    for video in repository.list_videos():
+        if video["platform"] == "fixture" or _existing(video.get("library_audio_path")):
+            continue
+        audio_file = _existing(video.get("source_audio_path"))
+        source = _existing(video.get("source_media_path"))
+        video_file = source if source and source.suffix.lower() in media.VIDEO_SUFFIXES else None
+        if not audio_file and not video_file:
+            continue
+        try:
+            paths = media.export_media(root, video, video_file=video_file, audio_file=audio_file)
+            repository.set_library_paths(video["id"], video_path=paths["video"], audio_path=paths["audio"])
+            exported += 1
+        except (OSError, NotFoundError):
+            continue
+    return exported
 
 
 def _clean_tags(tags: list[str]) -> list[str]:
@@ -121,6 +160,11 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
     async def lifespan(_: FastAPI):
         if start_worker:
             current.worker.start()
+            if settings.media_root is not None:
+                import threading
+
+                threading.Thread(target=backfill_media, args=(repository, settings.media_root),
+                                 name="media-backfill", daemon=True).start()
         try:
             yield
         finally:
@@ -407,6 +451,64 @@ def create_app(runtime: Runtime | None = None, *, start_worker: bool = True) -> 
             raise _error("Video not found", "not_found", 404) from error
         except ConflictError as error:
             raise _error(str(error), "transcript_conflict", 409) from error
+
+    def _media_root() -> Path:
+        if settings.media_root is None:
+            raise _error("The media folder is turned off (MEDIA_ROOT).", "media_disabled", 409)
+        return settings.media_root
+
+    @app.get("/api/media")
+    def media_info() -> dict[str, Any]:
+        root = settings.media_root
+        if root is None:
+            return {"enabled": False, "root": None, "videos": None, "audio": None, "video_count": 0, "audio_count": 0}
+        dirs = media.media_dirs(root)
+        def count(folder: Path) -> int:
+            return sum(1 for item in folder.rglob("*") if item.is_file() and not item.name.startswith(".")) if folder.is_dir() else 0
+        return {
+            "enabled": True,
+            "root": str(dirs["root"]),
+            "videos": str(dirs["videos"]),
+            "audio": str(dirs["audio"]),
+            "video_count": count(dirs["videos"]),
+            "audio_count": count(dirs["audio"]),
+        }
+
+    @app.post("/api/media/open", status_code=204)
+    def open_media_folder(payload: MediaFolderRequest) -> Response:
+        folder = media.media_dirs(_media_root())[payload.folder]
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            media.open_path(folder)
+        except OSError as error:
+            raise _error(f"Could not open the folder: {error}", "open_failed", 500) from error
+        return Response(status_code=204)
+
+    def _video_media_file(video_id: str, kind: str) -> Path:
+        try:
+            video = repository.hydrate_video(video_id)
+        except NotFoundError as error:
+            raise _error("Video not found", "not_found", 404) from error
+        path = _existing(video.get(f"library_{kind}_path"))
+        if path is None:
+            raise _error(f"No {kind} file is saved for this video yet.", "media_missing", 404)
+        return path
+
+    @app.post("/api/videos/{video_id}/media/open", status_code=204)
+    def open_video_media(video_id: str, payload: MediaOpenRequest) -> Response:
+        path = _video_media_file(video_id, payload.kind)
+        try:
+            media.open_path(path, reveal=payload.reveal)
+        except OSError as error:
+            raise _error(f"Could not open the file: {error}", "open_failed", 500) from error
+        return Response(status_code=204)
+
+    @app.get("/api/videos/{video_id}/media/{kind}")
+    def stream_video_media(video_id: str, kind: Literal["video", "audio"]) -> FileResponse:
+        path = _video_media_file(video_id, kind)
+        media_type = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+                      ".mkv": "video/x-matroska", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4"}.get(path.suffix.lower())
+        return FileResponse(path, media_type=media_type, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/videos/{video_id}/export")
     def export_transcript(video_id: str, format: Literal["txt", "srt", "vtt", "timestamped"] = "txt") -> PlainTextResponse:

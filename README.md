@@ -6,14 +6,14 @@
 
 **Your local workspace for Tunisian Arabic video transcripts.**
 
-Save public reels. Turn speech into editable drafts. Keep your next script close.
+Save YouTube videos and reels. Turn speech into editable drafts. Keep your next script close.
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
 [![Next.js](https://img.shields.io/badge/Next.js-16-111827?style=flat-square&logo=nextdotjs&logoColor=white)](frontend/package.json)
 [![Storage](https://img.shields.io/badge/Storage-SQLite-00758F?style=flat-square&logo=sqlite&logoColor=white)](backend/app/db.py)
 [![Platforms](https://img.shields.io/badge/Runs%20on-macOS%20%7C%20Windows-527A60?style=flat-square)](#-install-and-launch)
 
-[Screenshots](#-a-quick-look) · [Install on macOS](#-macos) · [Install on Windows](#-windows) · [First transcript](#-your-first-transcript) · [Troubleshooting](#-troubleshooting)
+[Screenshots](#-a-quick-look) · [Install on macOS](#-macos) · [Install on Windows](#-windows) · [First transcript](#-your-first-transcript) · [Your files](#-where-are-my-files) · [Troubleshooting](#-troubleshooting)
 
 <br />
 
@@ -25,7 +25,7 @@ Save public reels. Turn speech into editable drafts. Keep your next script close
 
 Reel Machine is a personal video library and transcript editor built for **Tunisian Arabic (Derja)**, including the French and English words people mix in.
 
-Paste a public Instagram, Facebook, or TikTok link, and Reel Machine downloads the audio, runs speech recognition **on your own computer** with the [FarukSTT](https://huggingface.co/medyas/FarukSTT) model, and gives you a clean draft to review, edit, and export. A Notes space keeps your own ideas and scripts next to your research.
+Paste a public **YouTube**, **Instagram**, **Facebook**, or **TikTok** link. Reel Machine downloads the video, prepares its audio, runs speech recognition **on your own computer** with the [FarukSTT](https://huggingface.co/medyas/FarukSTT) model, and gives you a clean draft to review, edit, and export. Every video and its audio are saved in a tidy folder you can open anytime. A Notes space keeps your own ideas and scripts next to your research.
 
 > The app window is branded **Kite**. Nothing is uploaded to a cloud service: your library, media, and transcripts stay on your machine.
 
@@ -46,6 +46,8 @@ Paste a public Instagram, Facebook, or TikTok link, and Reel Machine downloads t
 
 **Also inside**
 
+- ▶️ YouTube (videos & Shorts), Instagram, Facebook, TikTok
+- 🎞️ Watch the video and play its audio right in the app
 - ✍️ Transcript editor with timestamps and revision history
 - 📤 Export to **TXT**, **SRT**, and **VTT**
 - ⏯️ Pause, resume, and retry jobs without losing progress
@@ -191,19 +193,46 @@ Your `.env`, library, and model files are kept.
 ## 🎬 Your first transcript
 
 1. Open **Library** and click **New video**.
-2. Paste a public Instagram, Facebook, or TikTok link, check the preview, add tags, and save.
+2. Paste a public YouTube, Instagram, Facebook, or TikTok link, check the preview, add tags, and save.
 3. The video joins the queue automatically. Open it to watch each step: download → prepare audio → transcribe.
-4. Review the draft, fix any words, then **copy** the text or export **TXT / SRT / VTT**.
-5. Find everything finished in **Résultat**, and write your own scripts in **Notes**.
+4. Under **Media files**, play the video or its audio, or click **Show in folder**.
+5. Review the draft, fix any words, then **copy** the text or export **TXT / SRT / VTT**.
+6. Find everything finished in **Résultat**, and write your own scripts in **Notes**.
 
 Transcription speed depends on your computer. The first run loads the model and takes longer; the app learns and shows time estimates after a few videos.
+
+## 📂 Where are my files?
+
+Every video you process is saved, with its audio, in a clean, human-friendly folder: **`Documents/Reel Machine`** in your home folder by default.
+
+```text
+Reel Machine/
+├── Videos/
+│   ├── YouTube/    2026-09-24 كسكسي بالعلوش على طريقة جدتي [Kx7r2mQpL0a].mp4
+│   ├── Instagram/  2026-09-24 غروب الشمس في سيدي بوسعيد [C9demoSidi].mp4
+│   └── TikTok/ …
+└── Audio/
+    ├── YouTube/    2026-09-24 كسكسي بالعلوش على طريقة جدتي [Kx7r2mQpL0a].wav
+    ├── Instagram/  2026-09-24 غروب الشمس في سيدي بوسعيد [C9demoSidi].wav
+    └── TikTok/ …
+```
+
+- **Videos** are MP4 (H.264/AAC preferred, up to 1080p), so they open in QuickTime, Photos, or the Windows Media Player.
+- **Audio** is the exact 16 kHz mono WAV the recognizer listened to, with the **same name** as its video.
+- Open them from **Settings → Media folder** (*Open videos folder* / *Open audio folder*), or from any video's **Media files** section (*Open*, *Show in folder*).
+- **Done → Complete** keeps these files. **Delete video** removes them.
+- Want a different place? Set `MEDIA_ROOT` in `.env` (for example an external drive).
+
+<img src="docs/assets/screenshots/media-folder.png" alt="Settings panel showing the Videos and Audio folders with open buttons" width="100%" />
 
 ## ⚙️ How it works
 
 ```mermaid
 flowchart LR
-    A[Public video URL] --> B[Local download]
+    A[Public video URL] --> B["Download video<br/>MP4"]
     B --> C["FFmpeg<br/>Mono 16 kHz audio"]
+    B --> M[("Media folder<br/>Videos + Audio")]
+    C --> M
     C --> D["FarukSTT<br/>Transcript draft"]
     D --> E[Review and edit]
     E --> F[TXT · SRT · VTT]
@@ -212,7 +241,7 @@ flowchart LR
     G --- E
 ```
 
-**Next.js + React** power the interface on port `3001`. **FastAPI** runs the API on port `8001` (interactive docs at [/docs](http://127.0.0.1:8001/docs)). Both only listen on your own computer. A local worker processes **one video at a time**, in order, and saves checkpoints so finished steps are never repeated. Instagram and Facebook use yt-dlp; TikTok uses a pinned gallery-dl adapter.
+**Next.js + React** power the interface on port `3001`. **FastAPI** runs the API on port `8001` (interactive docs at [/docs](http://127.0.0.1:8001/docs)). Both only listen on your own computer. A local worker processes **one video at a time**, in order, and saves checkpoints so finished steps are never repeated. YouTube, Instagram, and Facebook download with yt-dlp; TikTok uses a pinned gallery-dl adapter.
 
 FarukSTT produces a **draft** for human review. The app does not verify that a clip is actually Tunisian Arabic.
 
@@ -223,8 +252,8 @@ FarukSTT produces a **draft** for human review. The app does not verify that a c
 | **Pause** | Stops the job but keeps finished steps. Stays paused after restarts. |
 | **Resume** | Continues from the last finished step. |
 | **Retry** | Tries a failed job again, reusing anything still valid. |
-| **Done → Complete** | Deletes the audio/video, keeps the transcript as a read-only record. |
-| **Delete** | Removes the video and all its files. The model is kept. |
+| **Done → Complete** | Cleans up internal working copies, keeps the transcript read-only. Your media folder files stay. |
+| **Delete** | Removes the video and all its files, including its media folder copies. The model is kept. |
 
 ## 🔧 Configuration
 
@@ -233,10 +262,10 @@ Settings live in `.env` (copied from [.env.example](.env.example)).
 | Setting | Default | Purpose |
 | :--- | :--- | :--- |
 | `FARUKSTT_MODEL` | `${HOME}/Library/Caches/kite/FarukSTT` | Folder with the downloaded model. **Set this.** |
+| `MEDIA_ROOT` | `~/Documents/Reel Machine` | Where organized videos and audio are saved. |
 | `DATABASE_PATH` | `data/library.db` | Your library database. |
-| `ARTIFACT_ROOT` | `data/runs` | Media, audio, transcripts, and logs. |
+| `ARTIFACT_ROOT` | `data/runs` | Internal working files, checkpoints, and logs. |
 | `FFMPEG` | `ffmpeg` | FFmpeg command or full path. |
-| `YTA_FUNCTION` | `./scripts/yta` | Instagram/Facebook downloader (macOS). Windows uses `scripts/yta.py` automatically. |
 | `GALLERY_DL` | `gallery-dl` | TikTok metadata command. |
 | `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE` | `1` | Keep model loading fully offline. |
 | `ALLOW_FIXTURE_SOURCES` | `false` | Enables fake `fixture://` sources for testing. |
@@ -264,6 +293,18 @@ Run `npm --prefix frontend run build`, then launch again. Rebuild after every up
 </details>
 
 <details>
+<summary><b>The video doesn't play inside the app</b></summary>
+
+Use **Open** to play it in your system player, or **Show in folder**. Some browsers can't play every codec; the file itself is fine.
+</details>
+
+<details>
+<summary><b>Videos I processed before this update aren't in the media folder</b></summary>
+
+When the app starts, it copies the audio (and video, when one was downloaded) of older items into the media folder automatically. Older items were downloaded as audio only; use **Reprocess** on one to download its video (the existing transcript is reused).
+</details>
+
+<details>
 <summary><b>Windows: “running scripts is disabled on this system”</b></summary>
 
 Use `.\scripts\run-local.cmd` instead of the `.ps1` file, or run once:
@@ -277,9 +318,10 @@ Close and reopen the terminal after installing them. On Windows, sign out and ba
 </details>
 
 <details>
-<summary><b>A video can't be downloaded</b></summary>
+<summary><b>A video can't be downloaded (YouTube, Instagram, …)</b></summary>
 
-Make sure the post is public. Platforms change often; update with `uv pip install -U yt-dlp` and retry. Open the video → **Processing history → View debug logs** for details. Logs can contain URLs and local paths, so review them before sharing.
+Make sure the post is public. Platforms change often, so update the downloader and retry:
+`uv pip install -U "yt-dlp[default]"`. YouTube also needs Node.js installed (it's in the requirements above). Age-restricted or members-only YouTube videos can't be downloaded. Open the video → **Processing history → View debug logs** for details. Logs can contain URLs and local paths, so review them before sharing.
 </details>
 
 ## 🧑‍💻 Development

@@ -80,15 +80,25 @@ desktop guide before replacing a packaged application.
 
 ## Downloads and recognition
 
-Instagram and Facebook use `YTA_FUNCTION`, which defaults to the bundled
-[`scripts/yta`](../scripts/yta) wrapper. It invokes the project's yt-dlp with
-Node.js, retries, audio extraction, metadata, and thumbnails. It does not require
-a personal shell function or alter your shell configuration.
+YouTube (videos and Shorts), Instagram, and Facebook download the **full video**
+with yt-dlp, run from the project's Python environment. The format preference is
+H.264/AAC up to 1080p, merged into MP4 with FFmpeg, so files play in standard
+players. YouTube requires Node.js (used by yt-dlp's challenge solver) and the
+`yt-dlp[default]` extra from the `downloads` group.
 
-TikTok downloads use the installed, version-pinned gallery-dl adapter. It prefers
-the video's audio stream and then muxed MP4 alternatives, avoiding the separate
-music-library track. `GALLERY_DL` controls metadata previews. Neither path installs
-dependencies during processing.
+TikTok downloads use the installed, version-pinned gallery-dl adapter. It now
+prefers the muxed MP4 (picture and sound). If that file has no audio track, it
+keeps the video and fetches the audio-bearing stream separately for transcription.
+`GALLERY_DL` controls metadata previews. Neither path installs dependencies during
+processing.
+
+After audio preparation, clean copies are placed in `MEDIA_ROOT`
+(default `~/Documents/Reel Machine`): `Videos/<Platform>/` and `Audio/<Platform>/`,
+with matching `<date> <title> [<id>]` names. Files are hard-linked when possible,
+so they take no extra disk space. Settings has buttons to open these folders; each
+video's **Media files** section can play, open, or reveal its files. On startup,
+older items are copied in automatically. Older audio-only downloads are fetched
+again as video on the next Retry or Reprocess.
 
 FFmpeg checks for usable audio and prepares mono 16 kHz WAV for FarukSTT.
 An explicit retry after `audio_stream_missing` invalidates the unusable download
@@ -106,10 +116,12 @@ retry requires an explicit action. Duplicate imports do not create a second job.
   successful checkpoints. Paused work remains paused across restarts.
 - **Resume** continues the same run, reuses completed steps, and restarts the
   interrupted step. Partial files for that interrupted step are discarded.
-- **Done → Complete** removes source media and keeps transcript revisions and
-  generated text artifacts. The record becomes read-only.
+- **Done → Complete** removes internal working copies and keeps transcript
+  revisions, generated text artifacts, and the media folder files. The record
+  becomes read-only.
 - **Delete** stops processing and permanently removes the video's records,
-  media, transcripts, exports, checkpoints, and logs. Model weights are retained.
+  media (including its media folder copies), transcripts, exports, checkpoints,
+  and logs. Model weights are retained.
 
 Estimates learn from recent successful real runs using the same model source.
 They exclude download/preparation time and paused time. Fixture, failed, and

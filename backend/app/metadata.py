@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from typing import Any
 
+from .media import ytdlp_prefix
 from .pipeline import PRIVATE_VIDEO_MESSAGE, PipelineError, gallery_dl_command
 from .settings import Settings
 from .urls import URLValidationError, VideoIdentity, canonicalize_url
@@ -55,6 +56,8 @@ def _inspect_tiktok_with_gallery_dl(identity: VideoIdentity, settings: Settings)
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=25,
         )
@@ -119,18 +122,17 @@ def inspect_video(url: str, settings: Settings) -> dict[str, Any]:
                 )
             return base
 
-    executable = settings.ytdlp if shutil.which(settings.ytdlp) or settings.ytdlp.startswith("/") else None
-    if executable is None:
+    try:
+        prefix = ytdlp_prefix(settings.ytdlp)
+    except PipelineError:
         base["message"] = "yt-dlp is not available for metadata inspection. The link can still be saved."
         return base
     command = [
-        executable,
+        *prefix,
         "--dump-single-json",
         "--skip-download",
         "--no-playlist",
         "--no-warnings",
-        "--extractor-args",
-        "youtube:player_client=web_embedded",
     ]
     if shutil.which("node"):
         command.extend(["--js-runtimes", "node"])
@@ -141,6 +143,8 @@ def inspect_video(url: str, settings: Settings) -> dict[str, Any]:
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=25,
         )
@@ -163,7 +167,7 @@ def inspect_video(url: str, settings: Settings) -> dict[str, Any]:
             "thumbnail_url": payload.get("thumbnail"),
             "source_page_url": payload.get("webpage_url") or identity.source_url,
             "duration_ms": int(float(duration) * 1000) if isinstance(duration, (int, float)) else None,
-            "metadata_source": "yt-dlp + web_embedded extractor",
+            "metadata_source": "yt-dlp",
             "message": "Metadata detected. Verify the source before saving.",
         }
     )
